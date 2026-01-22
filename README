@@ -9,6 +9,7 @@ https://youtu.be/daaX67Ovegk
 
 This is a script to allow a Rocky (RHEL) Server (9.x) to become an AD/DC Server from Samba Source. 
 Yes, there are others that build RPMS, but why not build it yourself?
+RADS builds Samba from the Rocky Samba SRPM into RPM packages and installs them (dnf-managed).
 I took this approach because there is not one binary that this script modifies and therefore can be a trusted source. 
 
 
