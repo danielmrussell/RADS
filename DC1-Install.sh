@@ -22,6 +22,8 @@ else
   exit 1
 fi
 
+cd /root
+
 # Checking for version information
 if [ "$MAJOROS" -ge 9 ]; then
   echo -e "[${GREEN}SUCCESS${TEXTRESET}] Detected compatible OS version: Rocky 9.x or greater"
@@ -1265,18 +1267,25 @@ configure_samba_provisioning() {
   "Downloading and compiling Samba from source using 'mock'\n\nThis may take up to 30 minutes\n\nThe Installer will Continue Shortly " 10 80
   sleep 4
 
-  dnf download samba --source
-  if ! ls /root/samba-*.rpm 1>/dev/null 2>&1; then
+  SAMBA_SRCDIR=$(mktemp -d)
+  trap 'rm -rf "$SAMBA_SRCDIR" EXIT # clean up the temp file even if we exit early or in error
+  
+  dnf download samba --source --destdir "$SAMBA_SRCDIR}"
+  # if ! ls /root/samba-*.rpm 1>/dev/null 2>&1; then
+  if [[ ! $(find "$SAMBA_SRCDIR" -maxdepth 1 -type f -name "samba*.src.rpm" | wc -l) ]]; then # count the number of source rpms downloaded; should be 1, not zero
     dialog --backtitle "Samba Build --dc with Mock" --msgbox "Samba source RPM failed to download. Check your network." 8 50
     return 1
   fi
 
-  MOCKSMBVER=$(dnf provides samba | grep samba | sed '2,4d' | cut -d: -f1 | cut -dx -f1)
-  MOCKCMD="mock -r rocky-${MAJOROS}-x86_64 --enablerepo=devel --define 'dist .el${MAJOROS}_${MINOROS}.dc' --with dc ${MOCKSMBVER}src.rpm"
+  # MOCKSMBVER=$(dnf provides samba | grep samba | sed '2,4d' | cut -d: -f1 | cut -dx -f1)
+  MOCK_RESULTDIR=$(mktemp -d)
+  trap 'rm -rf "$MOCK_RESULTDIR"' EXIT # delete the temp folder if we exit for any reason
+  MOCKCMD="mock -r rocky-${MAJOROS}-x86_64 --enablerepo=devel --define 'dist .el${MAJOROS}_${MINOROS}.dc' --with dc --resultdir=\"$MOCK_RESULTDIR\" \"${SAMBA_SRCDIR}/samba*.src.rpm\""
 
   TMPLOG=$(mktemp)
   PIPE=$(mktemp -u)
   mkfifo "$PIPE"
+  trap 'rm -rf "$PIPE"' EXIT # delete the temp folder if we exit for any reason
 
   # Launch mock inside a pseudo-terminal using `script`
   script -q -c "$MOCKCMD" /dev/null > "$PIPE" 2>&1 &
@@ -1287,15 +1296,17 @@ configure_samba_provisioning() {
   wait $MOCKPID
   rm -f "$PIPE"
 
-  if ! ls /var/lib/mock/rocky-${MAJOROS}-x86_64/result/*.rpm &>/dev/null; then
+  # if ! ls /var/lib/mock/rocky-${MAJOROS}-x86_64/result/*.rpm &>/dev/null; then
+  if [[ ! $(find "$MOCK_RESULTDIR" -maxdepth 1 -type f -name "*.rpm" | wc -l) ]]; then # count the rpms we just build to make sure there are some
     dialog --backtitle "Samba Build --dc with Mock" --title "Mock Build Failed" --msgbox "Build failed. Check logs manually." 8 60
     return 1
   fi
 
   mkdir -p /root/.samba
-  cp /var/lib/mock/rocky-${MAJOROS}-x86_64/result/*.rpm /root/.samba
+  # cp /var/lib/mock/rocky-${MAJOROS}-x86_64/result/*.rpm /root/.samba
+  cp "$MOCK_RESULTDIR/*.rpm" /root/.samba
   createrepo /root/.samba
-  dnf config-manager --add-repo /root/.samba
+  # dnf config-manager --add-repo /root/.samba
   dnf -y install --nogpgcheck samba-dc samba-client krb5-workstation samba \
     --repofrompath=samba,/root/.samba \
     --enablerepo=samba >/dev/null
