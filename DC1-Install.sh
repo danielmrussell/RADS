@@ -22,6 +22,8 @@ else
   exit 1
 fi
 
+cd /root
+
 # Checking for version information
 if [ "$MAJOROS" -ge 9 ]; then
   echo -e "[${GREEN}SUCCESS${TEXTRESET}] Detected compatible OS version: Rocky 9.x or greater"
