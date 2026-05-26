@@ -74,14 +74,14 @@ sleep 1
 #Clone RADS
 
 mkdir -p /root/ADDCInstaller
-rm -rf /root/ADDCInstaller && git clone https://github.com/fumatchu/RADS.git /root/ADDCInstaller
+rm -rf /root/ADDCInstaller && git clone https://github.com/danielmrussell/RADS.git /root/ADDCInstaller
 chmod 700 /root/ADDCInstaller/*
 
 
 #Clone FR
 
 mkdir -p /root/FR-Installer
-rm -rf /root/FR-Installer && git clone https://github.com/fumatchu/FR-RADS.git /root/FR-Installer
+rm -rf /root/FR-Installer && git clone https://github.com/danielmrussell/FR-RADS.git /root/FR-Installer
 
 
 echo -e "[${YELLOW}INFO${TEXTRESET}] Removing Git"
