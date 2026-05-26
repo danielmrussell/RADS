@@ -1922,7 +1922,7 @@ check_and_enable_services() {
 install_server_management() {
   LOG_FILE="/var/log/server-management-install.log"
   INSTALL_DIR="/root/RADS-SMInstaller"
-  GIT_REPO="https://github.com/fumatchu/RADS-SM.git"
+  GIT_REPO="https://github.com/danielmrussell/RADS-SM.git"
 
   dialog --backtitle "Installing Server Manager" --title "Installing Server Management" --infobox \
     "This installer will set up Server Management tools for AD, DHCP, and services.\n\nYou can launch it anytime by typing: server-manager" 8 90
