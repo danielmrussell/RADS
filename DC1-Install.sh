@@ -94,7 +94,7 @@ check_hostname_in_domain() {
 }
 isValidIP() {
   [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-  IFS=. read -r o1 o2 o3 o4 <<< "$1"
+  IFS='.' read -r o1 o2 o3 o4 <<< "$1"
   (( o1 <= 255 && o2 <= 255 && o3 <= 255 && o4 <= 255 )) || return 1
   return 0
 }
@@ -886,9 +886,10 @@ configure_dhcp_server() {
   # ───────────────────── shared IP/CIDR + domain helpers ──────────────────────
   is_valid_ip(){
     [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-    local IFS=.; local o; for o in $1; do [[ $o -ge 0 && $o -le 255 ]] || return 1; done
+    IFS='.'
+    local o; for o in $1; do [[ $o -ge 0 && $o -le 255 ]] || return 1; done
   }
-  ip_to_int(){ local IFS=.; read -r a b c d <<<"$1"; echo $(( (a<<24)+(b<<16)+(c<<8)+d )); }
+  ip_to_int(){ IFS='.'; read -r a b c d <<<"$1"; echo $(( (a<<24)+(b<<16)+(c<<8)+d )); }
   int_to_ip(){ local i=$1; printf "%d.%d.%d.%d" $(( (i>>24)&255 )) $(( (i>>16)&255 )) $(( (i>>8)&255 )) $(( i&255 )); }
   cidr_to_netmask(){ local c=$1; local m=$(( 0xFFFFFFFF << (32-c) & 0xFFFFFFFF )); int_to_ip "$m"; }
   netmask_to_cidr(){
@@ -973,7 +974,8 @@ configure_dhcp_server() {
       while true; do
         SEARCH_DOMAIN=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
           "Enter search domain(s) for clients (comma-separated if multiple):" 9 78 "${DEF_SEARCH}")
-        local ok=1 IFS=, item
+        IFS=','
+        local ok=1 item
         for item in $SEARCH_DOMAIN; do
           item="${item// /}" ; is_valid_domain "$item" || { ok=0; break; }
         done
@@ -1076,7 +1078,8 @@ EOF
       while true; do
         SEARCH_DOMAIN=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
           "Enter search domain(s) for clients (comma-separated if multiple):" 9 78 "${DEF_SEARCH}")
-        local ok=1 IFS=, item
+        IFS=','
+        local ok=1 item
         for item in $SEARCH_DOMAIN; do
           item="${item// /}" ; is_valid_domain "$item" || { ok=0; break; }
         done
