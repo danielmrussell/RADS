@@ -81,7 +81,7 @@ chmod 700 /root/ADDCInstaller/*
 #Clone FR
 
 mkdir -p /root/FR-Installer
-rm -rf /root/FR-Installer && git clone https://github.com/danielmrussell/FR-RADS.git /root/FR-Installer
+rm -rf /root/FR-Installer && git clone https://github.com/fumatchu/FR-RADS.git /root/FR-Installer
 
 
 echo -e "[${YELLOW}INFO${TEXTRESET}] Removing Git"
