@@ -869,11 +869,10 @@ configure_dhcp_server() {
       while true; do
         SEARCH_DOMAIN=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
           "Enter search domain(s) for clients (comma-separated if multiple):" 9 78 "${DEF_SEARCH}")
-        
         IFS=','
         local ok=1 item
         for item in $SEARCH_DOMAIN; do
-          item="${item//[[:space:]] /}" ; is_valid_domain "$item" || { ok=0; break; }
+          item="${item//[[:space:]]/}" ; is_valid_domain "$item" || { ok=0; break; }
         done
         [[ $ok -eq 1 ]] && break
         msgbox "Invalid Search Domain" "Domain: \"$item\" invalid. Use comma-separated DNS domains."
@@ -971,6 +970,9 @@ EOF
         is_valid_domain "$DOM_SUFFIX" && break
         msgbox "Invalid Domain" "Please enter a valid domain suffix like 'ad.example.com'."
       done
+
+# TODO: delete this block of code which doesn't work for some reason
+      : <<'COMMENT'
       while true; do
         SEARCH_DOMAIN=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
           "Enter search domain(s) for clients (comma-separated if multiple):" 9 78 "${DEF_SEARCH}")
@@ -982,6 +984,27 @@ EOF
         [[ $ok -eq 1 ]] && break
          msgbox "Invalid Search Domain" "Domain: \"$item\" invalid. Use comma-separated DNS domains."
       done
+      COMMENT
+ 
+      local ok=0 item
+      IFS=','
+      while ! ok; do
+        ok=1 # presume it's going to be correct this time until proven otherwise
+        SEARCH_DOMAIN=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
+          "Enter search domain(s) for clients (comma-separated if multiple):" 9 78 "${DEF_SEARCH}")
+        read -ra items <<< "$SEARCH_DOMAIN" # turn comma-delimited input into an array
+
+        for item in "${items[@]}"; do
+          item="${item//[[:space:]]/}" # remove whitespace
+          if ! is_valid_domain "$item" ; then
+            ok=0
+            msgbox "Invalid Search Domain" "Domain: \"$item\" invalid. Use comma-separated DNS domains."
+            break  # don't continue processing more domains if we encountered an invalid one
+          fi
+        done
+        # Loop to user input again if there was a bad domain
+      done
+     
       DNS_SERVERS=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
         "Enter DNS servers (comma separated, or leave blank to use $INET4):" 8 78 "$INET4")
       SUBNET_DESC=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
