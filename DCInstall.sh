@@ -804,12 +804,89 @@ configure_dhcp_server() {
     local m=$(( 0xFFFFFFFF << (32-c) & 0xFFFFFFFF ))
     (( ( $(ip_to_int "$ip") & m ) == ( $(ip_to_int "$net") & m ) ))
   }
-  is_valid_domain(){
-    local d="$1"
-    [[ -n "$d" ]] || return 1
-    [[ "$d" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]
-  }
 
+is_valid_domain() {
+    local input_domain="$1"
+    
+    # Dynamic Nameref Assignment for error mesages:
+    # If $2 is provided, err_msg points to that variable.
+    # If $2 is empty, err_msg points to an internal dummy variable that is safely discarded.
+    local dummy_err_discard
+    if [[ -n "$2" ]]; then
+        local -n err_msg="$2"
+    else
+        local -n err_msg="dummy_err_discard"
+    fi
+    
+    err_msg="" # Safely clears either the user's variable or the dummy variable
+
+    # 1. Reject empty inputs
+    # idn2 will not error on empty input
+    if [[ -z "$input_domain" ]]; then
+        err_msg="Domain input cannot be empty."
+        return 1
+    fi
+
+    # 2. Process and validate via idn2
+    # 
+    # LOGIC EXPLANATION FOR IDN2 BEHAVIOR:
+    # We downcase the string first for cleaner comparisons. We then run idn2 with
+    # --usestd3asciirules for multi-layered validation:
+    # - If the input violates strict rules (bad Unicode, labels >= 64 chars, total
+    #   domain length >= 256 chars, or bad character symbols), idn2 fails with exit code 1. 
+    #   We capture its exact stderr stream and pass it directly to err_msg.
+    # - If the input contains bad ASCII noise (spaces, '://'), idn2 does NOT fail;
+    #   it silently strips/alters the noise and exits 0. To catch this silent modification,
+    #   we compare idn2's output against the downcased original input. If they mismatch
+    #   and it isn't an intentional Punycode 'xn--' conversion, we know idn2 altered
+    #   illegal characters, and we block it.
+    # - If the input is clean ASCII, idn2 outputs the exact lowercase string (exit 0).
+    local lower_domain
+    lower_domain=$(echo "$input_domain" | tr '[:upper:]' '[:lower:]')
+
+    local ascii_domain
+    local idn2_err
+    
+    # Run idn2, capturing stdout into a variable and redirecting stderr to idn2_err
+    # note: you cannot combine the next two lines, because `local` will overwrite the "last return code" from idn2, but we need it ($?)
+    local result
+    result=$(idn2 --quiet --usestd3asciirules "$lower_domain" 2>&1)
+    
+    if (( $? != 0 )); then
+        err_msg="$result" # If idn2 failed, $result holds the exact error text
+        return 1
+    fi
+    
+    if [[ "$result" != "$lower_domain" && ! "$result" =~ ^xn-- ]]; then
+        err_msg="Domain contains illegal characters (like spaces or symbols) that were automatically altered or discarded."
+        return 1
+    fi
+
+    # 3. Enforce Samba AD specific suffix restriction (.local)
+    if [[ "$result" =~ \.local$ ]]; then
+        err_msg="Domains ending in '.local' are not allowed. This suffix conflicts with Multicast DNS (mDNS) used by Apple Bonjour, Linux Avahi, and network devices. Using '.local' for Active Directory causes frequent name resolution errors and device dropouts. Please choose a different suffix."
+        return 1
+    fi
+
+    # 4. Check for single-label
+    IFS='.' read -ra labels <<< "$result"
+    if (( ${#labels[@]} < 2 )); then
+        err_msg="Single-label domains (like '$lower_domain') are not allowed. While legacy networks historically used them, modern operating systems reject them, and they cause critical compatibility issues. You must use a fully qualified domain name. If your company owns a public domain name (e.g., 'company.com'), you should consider just using that, but adding an Active Directory prefix (to separate Internet from privileged internal traffic), resulting in something like 'ad.company.com'."
+        return 1
+    fi
+
+    #5. Check for empty segments (a.k.a. "labels", a.k.a. "domain components") (idn2 does not do this)
+    for label in "${labels[@]}"; do
+        if (( ${#label} < 1 )); then
+            err_msg="Domain contains an empty segment (e.g., consecutive dots like 'example..com')."
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+  domain_name_err="" # set up a variable to capture error messages from is_valid_domain()
   # ───────────────────────────── dhcpd setup flow ─────────────────────────────
   dhcpd_setup() {
     local iface inet4_line INET4 DHCPCIDR NET_DETECTED NETMASK_DETECTED
@@ -862,8 +939,8 @@ configure_dhcp_server() {
       while true; do
         DOM_SUFFIX=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
           "Enter domain suffix (for 'option domain-name'):" 8 78 "${DEF_SUFFIX}")
-        is_valid_domain "$DOM_SUFFIX" && break
-        msgbox "Invalid Domain" "Please enter a valid domain suffix like 'ad.example.com'."
+        is_valid_domain "$DOM_SUFFIX" domain_name_err && break
+        msgbox "$domain_name_err"
       done
       # Search domain(s) (option 119)
       while true; do
@@ -872,7 +949,7 @@ configure_dhcp_server() {
         IFS=','
         local ok=1 item
         for item in $SEARCH_DOMAIN; do
-          item="${item//[[:space:]]/}" ; is_valid_domain "$item" || { ok=0; break; }
+          item="${item//[[:space:]]/}" ; is_valid_domain "$item" domain_name_err || { ok=0; break; }
         done
         [[ $ok -eq 1 ]] && break
         msgbox "Invalid Search Domain" "Domain: \"$item\" invalid. Use comma-separated DNS domains."
@@ -963,29 +1040,15 @@ EOF
         [[ -n "$ROUTER" ]] && is_valid_ip "$ROUTER" && ip_in_cidr "$ROUTER" "$NETWORK" "$CIDR" && break
         msgbox "Invalid Gateway" "Gateway must be a valid IPv4 within $NETWORK/$CIDR."
       done
-      # domains
+      # domain suffix
       while true; do
         DOM_SUFFIX=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
           "Enter domain suffix (for 'domain-name'):" 8 78 "${DEF_SUFFIX}")
-        is_valid_domain "$DOM_SUFFIX" && break
-        msgbox "Invalid Domain" "Please enter a valid domain suffix like 'ad.example.com'."
+        is_valid_domain "$DOM_SUFFIX" domain_name_err && break
+        msgbox "Invalid Domain" "$domain_name_err" "Please enter a valid domain suffix like 'ad.example.com'."
       done
 
-# TODO: delete this block of code which doesn't work for some reason
-      : <<'COMMENT'
-      while true; do
-        SEARCH_DOMAIN=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
-          "Enter search domain(s) for clients (comma-separated if multiple):" 9 78 "${DEF_SEARCH}")
-        IFS=','
-        local ok=1 item
-        for item in $SEARCH_DOMAIN; do
-          item="${item//[[:space:]]/}" ; is_valid_domain "$item" || { ok=0; break; }
-        done
-        [[ $ok -eq 1 ]] && break
-         msgbox "Invalid Search Domain" "Domain: \"$item\" invalid. Use comma-separated DNS domains."
-      done
-      COMMENT
- 
+     # search domains
       local ok=0 item
       IFS=','
       while ! ok; do
@@ -996,9 +1059,9 @@ EOF
 
         for item in "${items[@]}"; do
           item="${item//[[:space:]]/}" # remove whitespace
-          if ! is_valid_domain "$item" ; then
+          if ! is_valid_domain "$item" domain_name_err; then
             ok=0
-            msgbox "Invalid Search Domain" "Domain: \"$item\" invalid. Use comma-separated DNS domains."
+            msgbox "Invalid domain: $item" "$domain_name_err"
             break  # don't continue processing more domains if we encountered an invalid one
           fi
         done
