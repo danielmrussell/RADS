@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
-GREEN="\033[0;32m"
-RED="\033[0;31m"
-YELLOW="\033[1;33m"
-TEXTRESET="\033[0m"
-CYAN="\e[36m"
-RESET="\e[0m"
-USER=$(whoami)
-MAJOROS=$(cat /etc/redhat-release | grep -Eo "[0-9]" | sed '$d')
+
 
 
 clear
@@ -411,10 +404,6 @@ configure_chrony_from_addc() {
 
 #===========PROVISION SAMBA WITH MOCK=============
 configure_samba_provisioning() {
-  OSVER=$(grep -oE '[0-9]+\.[0-9]+' /etc/redhat-release)
-  MAJOROS=$(cut -d. -f1 <<< "$OSVER")
-  MINOROS=$(cut -d. -f2 <<< "$OSVER")
-
   DOMAIN=$(hostname | sed 's/^[^.:]*[.:]//' | sed -e 's/\(.*\)/\U\1/')
   ADDOMAIN=$(hostname | sed 's/^[^.:]*[.:]//' | cut -d. -f1 | sed -e 's/\(.*\)/\U\1/')
 
