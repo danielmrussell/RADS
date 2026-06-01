@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-GREEN="\033[0;32m"
-RED="\033[0;31m"
-YELLOW="\033[1;33m"
-TEXTRESET="\033[0m"
-CYAN="\e[36m"
-RESET="\e[0m"
-USER=$(whoami)
-MAJOROS=$(cat /etc/redhat-release | grep -Eo "[0-9]" | sed '$d')
-
+# Include common code.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
 
 clear
 echo -e "[${GREEN}SUCCESS${TEXTRESET}] Rocky ${CYAN}RADS FOREST${TEXTRESET} Builder ${YELLOW}Installation${TEXTRESET}"
@@ -53,24 +47,12 @@ if [[ $- == *i* ]]; then
   /root/ADDCInstaller/DCInstall.sh
 fi
 EOF
+
 if [[ -f "$INSTALLER" ]]; then
   chmod +x "$INSTALLER"
 else
   echo "WARNING: Installer not found at $INSTALLER"
 fi
-
-
-
-# Include the common code file
-# Get the directory of the current script
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Source the common file using an absolute path reference
-source "$SCRIPT_DIR/common.sh"
-
-
-
-
 
 # ========= UI SCREENS =========
 show_welcome_screen() {
