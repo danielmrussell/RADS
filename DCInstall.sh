@@ -889,6 +889,7 @@ is_valid_domain() {
   domain_name_err="" # set up a variable to capture error messages from is_valid_domain()
   # ───────────────────────────── dhcpd setup flow ─────────────────────────────
   dhcpd_setup() {
+    local ok=0 item
     local iface inet4_line INET4 DHCPCIDR NET_DETECTED NETMASK_DETECTED
     iface=$(nmcli -t -f DEVICE,STATE device status | awk -F: '$2=="connected"{print $1; exit}')
     [[ -z "$iface" ]] && { msgbox "DHCPD Setup" "No active interface found."; return 1; }
@@ -935,24 +936,35 @@ is_valid_domain() {
         [[ -n "$DHCPDEFGW" ]] && is_valid_ip "$DHCPDEFGW" && ip_in_cidr "$DHCPDEFGW" "$NET_DETECTED" "$DHCPCIDR" && break
         msgbox "Invalid Gateway" "Gateway must be a valid IPv4 within $NET_DETECTED/$DHCPCIDR."
       done
+      
       # Domain suffix (option 15)
-      while true; do
+      ok=0 
+      while ! ok; do
+        ok=1 # presume it's going to be correct this time until proven otherwise
         DOM_SUFFIX=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
           "Enter domain suffix (for 'option domain-name'):" 8 78 "${DEF_SUFFIX}")
-        is_valid_domain "$DOM_SUFFIX" domain_name_err && break
-        msgbox "$domain_name_err"
-      done
+          if ! is_valid_domain "$DOM_SUFFIX" domain_name_err; then
+            ok=0
+            msgbox "Invalid domain suffix: $DOM_SUFFIX" "$domain_name_err"
+          fi
+      done # Loop to user input again if there was a bad domain
+      
       # Search domain(s) (option 119)
-      while true; do
+      
+      ok=0 
+      while ! ok; do
+        ok=1 # presume it's going to be correct this time until proven otherwise
         SEARCH_DOMAIN=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
           "Enter search domain(s) for clients (comma-separated if multiple):" 9 78 "${DEF_SEARCH}")
         IFS=','
-        local ok=1 item
         for item in $SEARCH_DOMAIN; do
-          item="${item//[[:space:]]/}" ; is_valid_domain "$item" domain_name_err || { ok=0; break; }
+          item="${item//[[:space:]]/}"
+          if ! is_valid_domain "$item" domain_name_err)
+            ok=0;
+            msgbox "Invalid Search Domain" "Domain: \"$item\" invalid. Use comma-separated DNS domains."
+            break;
+          if
         done
-        [[ $ok -eq 1 ]] && break
-        msgbox "Invalid Search Domain" "Domain: \"$item\" invalid. Use comma-separated DNS domains."
       done
 
       SUBNETDESC=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
@@ -1045,7 +1057,7 @@ EOF
         DOM_SUFFIX=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
           "Enter domain suffix (for 'domain-name'):" 8 78 "${DEF_SUFFIX}")
         is_valid_domain "$DOM_SUFFIX" domain_name_err && break
-        msgbox "Invalid Domain" "$domain_name_err" "Please enter a valid domain suffix like 'ad.example.com'."
+        msgbox "Invalid Domain: $DOM_SUFFIX" "$domain_name_err" "Please enter a valid domain suffix like 'ad.example.com'."
       done
 
      # search domains
