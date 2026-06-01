@@ -1,7 +1,18 @@
 #!/bin/bash
 # This file is meant to be included for common code between DCInstall.sh and DC1-Install.sh
+GREEN="\033[0;32m"
+RED="\033[0;31m"
+YELLOW="\033[1;33m"
+TEXTRESET="\033[0m"
+CYAN="\e[36m"
+RESET="\e[0m"
+USER=$(whoami)
 
-
+# Query the rocky-release package version directly (e.g., 9.4)
+# and extract major and minor versions from the full version string
+OSVER=$(rpm -q --qf "%{VERSION}" rocky-release)
+MAJOROS=$(echo "$OSVER" | cut -d. -f1)
+MINOROS=$(echo "$OSVER" | cut -d. -f2)
 
 # ========= CHECK FOR PRE-EXISTING SMB AND SAMBA SERVICE =========
 check_samba_running() {
