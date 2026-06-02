@@ -553,7 +553,7 @@ Use SPACE to select/deselect options. Press ENTER to confirm, or Cancel to skip"
 check_samba_running
 show_welcome_screen
 detect_active_interface
-prompt_static_ip_if_dhcp
+configure_network
 check_root_and_os
 check_and_enable_selinux
 check_internet_connectivity
