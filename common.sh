@@ -493,7 +493,7 @@ configure_network() {
                     --help-button \
                     --help-label "Back" \
                     --output-fd 1 \
-                    --inputbox "Enter domain search suffixes separated by commas (Example: ://company.com, company.com):\nDO NOT use '.local':" \
+                    --inputbox "Enter domain search suffixes separated by commas (Example: ad.company.com, company.com):\nDO NOT use '.local':" \
                     9 65 "$CURRENT_SEARCH")
 
                 if [ $? -eq 2 ]; then
