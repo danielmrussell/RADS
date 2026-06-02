@@ -28,6 +28,117 @@ check_samba_running() {
 validate_cidr() { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$ ]]; }
 validate_ip()   { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
 validate_fqdn() { [[ "$1" =~ ^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$ ]]; }
+ip_to_int(){ IFS='.'; read -r a b c d <<<"$1"; echo $(( (a<<24)+(b<<16)+(c<<8)+d )); }
+int_to_ip(){ local i=$1; printf "%d.%d.%d.%d" $(( (i>>24)&255 )) $(( (i>>16)&255 )) $(( (i>>8)&255 )) $(( i&255 )); }
+cidr_to_netmask(){ local c=$1; local m=$(( 0xFFFFFFFF << (32-c) & 0xFFFFFFFF )); int_to_ip "$m"; }
+
+netmask_to_cidr()
+{
+  local ip=$1; is_valid_ip "$ip" || { echo -1; return; }
+  local n=$(ip_to_int "$ip") c=0 saw_zero=0
+  for ((i=31;i>=0;i--)); do
+    if (( (n>>i)&1 )); then (( saw_zero )) && { echo -1; return; }; ((c++))
+    else saw_zero=1
+    fi
+  done
+  echo "$c"
+}
+network_from_ip_cidr(){ local ip=$1 c=$2; local m=$(( 0xFFFFFFFF << (32-c) & 0xFFFFFFFF )); int_to_ip $(( $(ip_to_int "$ip") & m )); }
+broadcast_from_ip_cidr(){ local ip=$1 c=$2; local m=$(( 0xFFFFFFFF << (32-c) & 0xFFFFFFFF )); int_to_ip $(( $(ip_to_int "$ip") | (~m & 0xFFFFFFFF) )); }
+ip_in_cidr()
+{
+  local ip=$1 net=$2 c=$3
+  local m=$(( 0xFFFFFFFF << (32-c) & 0xFFFFFFFF ))
+  (( ( $(ip_to_int "$ip") & m ) == ( $(ip_to_int "$net") & m ) ))
+}
+
+is_valid_ip()
+{
+  [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  IFS='.'
+  local o; for o in $1; do [[ $o -ge 0 && $o -le 255 ]] || return 1; done
+}
+
+is_valid_domain() {
+  local input_domain="$1"
+  
+  # Dynamic Nameref Assignment for error mesages:
+  # If $2 is provided, err_msg points to that variable.
+  # If $2 is empty, err_msg points to an internal dummy variable that is safely discarded.
+  local dummy_err_discard
+  if [[ -n "$2" ]]; then
+      local -n err_msg="$2"
+  else
+      local -n err_msg="dummy_err_discard"
+  fi
+  
+  err_msg="" # Safely clears either the user's variable or the dummy variable
+
+  # 1. Reject empty inputs
+  # idn2 will not error on empty input
+  if [[ -z "$input_domain" ]]; then
+      err_msg="Domain input cannot be empty."
+      return 1
+  fi
+
+  # 2. Process and validate via idn2
+  # 
+  # LOGIC EXPLANATION FOR IDN2 BEHAVIOR:
+  # We downcase the string first for cleaner comparisons. We then run idn2 with
+  # --usestd3asciirules for multi-layered validation:
+  # - If the input violates strict rules (bad Unicode, labels >= 64 chars, total
+  #   domain length >= 256 chars, or bad character symbols), idn2 fails with exit code 1. 
+  #   We capture its exact stderr stream and pass it directly to err_msg.
+  # - If the input contains bad ASCII noise (spaces, '://'), idn2 does NOT fail;
+  #   it silently strips/alters the noise and exits 0. To catch this silent modification,
+  #   we compare idn2's output against the downcased original input. If they mismatch
+  #   and it isn't an intentional Punycode 'xn--' conversion, we know idn2 altered
+  #   illegal characters, and we block it.
+  # - If the input is clean ASCII, idn2 outputs the exact lowercase string (exit 0).
+  local lower_domain
+  lower_domain=$(echo "$input_domain" | tr '[:upper:]' '[:lower:]')
+
+  local ascii_domain
+  local idn2_err
+  
+  # Run idn2, capturing stdout into a variable and redirecting stderr to idn2_err
+  # note: you cannot combine the next two lines, because `local` will overwrite the "last return code" from idn2, but we need it ($?)
+  local result
+  result=$(idn2 --quiet --usestd3asciirules "$lower_domain" 2>&1)
+  
+  if (( $? != 0 )); then
+      err_msg="$result" # If idn2 failed, $result holds the exact error text
+      return 1
+  fi
+  
+  if [[ "$result" != "$lower_domain" && ! "$result" =~ ^xn-- ]]; then
+      err_msg="Domain contains illegal characters (like spaces or symbols) that were automatically altered or discarded."
+      return 1
+  fi
+
+  # 3. Enforce Samba AD specific suffix restriction (.local)
+  if [[ "$result" =~ \.local$ ]]; then
+      err_msg="Domains ending in '.local' are not allowed. This suffix conflicts with Multicast DNS (mDNS) used by Apple Bonjour, Linux Avahi, and network devices. Using '.local' for Active Directory causes frequent name resolution errors and device dropouts. Please choose a different suffix."
+      return 1
+  fi
+
+  # 4. Check for single-label
+  IFS='.' read -ra labels <<< "$result"
+  if (( ${#labels[@]} < 2 )); then
+      err_msg="Single-label domains (like '$lower_domain') are not allowed. While legacy networks historically used them, modern operating systems reject them, and they cause critical compatibility issues. You must use a fully qualified domain name. If your company owns a public domain name (e.g., 'company.com'), you should consider just using that, but adding an Active Directory prefix (to separate Internet from privileged internal traffic), resulting in something like 'ad.company.com'."
+      return 1
+  fi
+
+  #5. Check for empty segments (a.k.a. "labels", a.k.a. "domain components") (idn2 does not do this)
+  for label in "${labels[@]}"; do
+      if (( ${#label} < 1 )); then
+          err_msg="Domain contains an empty segment (e.g., consecutive dots like 'example..com')."
+          return 1
+      fi
+  done
+
+  return 0
+}
 
 is_host_ip() {
   local cidr="$1"
@@ -115,91 +226,8 @@ check_and_enable_selinux() {
   fi
 }
 
-# ========= NETWORK DETECTION =========
-detect_active_interface() {
-  dialog --backtitle "Network Setup" --title "Interface Check" --infobox "Checking active network interface..." 5 50
-  sleep 3
-
-  # Attempt 1: Use nmcli to find connected Ethernet
-  INTERFACE=$(nmcli -t -f DEVICE,TYPE,STATE device | grep "ethernet:connected" | cut -d: -f1 | head -n1)
-
-  # Attempt 2: Fallback to any interface with an IP if nmcli fails
-  if [[ -z "$INTERFACE" ]]; then
-    INTERFACE=$(ip -o -4 addr show up | grep -v ' lo ' | awk '{print $2}' | head -n1)
-  fi
-
-  # Get the matching connection profile name
-  if [[ -n "$INTERFACE" ]]; then
-    CONNECTION=$(nmcli -t -f NAME,DEVICE connection show | grep ":$INTERFACE" | cut -d: -f1)
-  fi
-
-  # Log to /tmp in case of failure
-  echo "DEBUG: INTERFACE=$INTERFACE" >> /tmp/kvm_debug.log
-  echo "DEBUG: CONNECTION=$CONNECTION" >> /tmp/kvm_debug.log
-
-  if [[ -z "$INTERFACE" || -z "$CONNECTION" ]]; then
-    dialog --clear  --no-ok --backtitle "Network Setup"  --title "Interface Error" --aspect 9 --msgbox "No active network interface with IP found. Check /tmp/kvm_debug.log for d
-etails." 5 70
-    exit 1
-  fi
-
-  export INTERFACE CONNECTION
-}
-
-# ========= STATIC IP CONFIG =========
-prompt_static_ip_if_dhcp() {
-  IP_METHOD=$(nmcli -g ipv4.method connection show "$CONNECTION" | tr -d '' | xargs)
-
-  if [[ "$IP_METHOD" == "manual" ]]; then
-  dialog --title "Static IP Detected" --infobox "Interface '$INTERFACE' is already using a static IP" 6 70
-  sleep 3
-  return
-elif [[ "$IP_METHOD" == "auto" ]]; then
-    while true; do
-      while true; do
-        IPADDR=$(dialog --backtitle "Interface Setup" --title "Static IP Address Required" --inputbox "***DHCP DETECTED on '$INTERFACE'***\n\nEnter static IP in CIDR format (e.g., 192.168.1.100/24):" 8 80 3>&1 1>&2 2>&3)
-        validate_cidr "$IPADDR" && break || dialog --msgbox "Invalid CIDR format. Try again." 6 40
-      done
-
-      while true; do
-        GW=$(dialog --backtitle "Interface Setup" --title "Gateway" --inputbox "Enter default gateway:" 8 60 3>&1 1>&2 2>&3)
-        validate_ip "$GW" && break || dialog --msgbox "Invalid IP address. Try again." 6 40
-      done
-
-      while true; do
-        DNSSERVER=$(dialog --backtitle "Interface Setup" --title "DNS Server" --inputbox "Enter Upstream DNS server IP:" 8 60 3>&1 1>&2 2>&3)
-        validate_ip "$DNSSERVER" && break || dialog --msgbox "Invalid IP address. Try again." 6 40
-      done
-
-      while true; do
-        HOSTNAME=$(dialog --backtitle "Interface Setup" --title "FQDN" --inputbox "Enter FQDN (e.g., host.domain.com):" 8 60 3>&1 1>&2 2>&3)
-        if validate_fqdn "$HOSTNAME" && check_hostname_in_domain "$HOSTNAME"; then break
-        else dialog --msgbox "Invalid FQDN or hostname repeated in domain. Try again." 7 60
-        fi
-      done
-
-      while true; do
-        DNSSEARCH=$(dialog --backtitle "Interface Setup" --title "DNS Search" --inputbox "Enter domain search suffix (e.g., localdomain):" 8 60 3>&1 1>&2 2>&3)
-        [[ -n "$DNSSEARCH" ]] && break || dialog --msgbox "Search domain cannot be blank." 6 40
-      done
-
-      dialog --backtitle "Interface Setup" --title "Confirm Settings" --yesno "Apply these settings?\n\nInterface: $INTERFACE\nIP: $IPADDR\nGW: $GW\nFQDN: $HOSTNAME\nDNS: $DNSSERVER\nSearch: $DNSSEARCH" 12 60
-
-      if [[ $? -eq 0 ]]; then
-        nmcli con mod "$CONNECTION" ipv4.address "$IPADDR"
-        nmcli con mod "$CONNECTION" ipv4.gateway "$GW"
-        nmcli con mod "$CONNECTION" ipv4.method manual
-        nmcli con mod "$CONNECTION" ipv4.dns "$DNSSERVER"
-        nmcli con mod "$CONNECTION" ipv4.dns-search "$DNSSEARCH"
-        hostnamectl set-hostname "$HOSTNAME"
 
 
-        dialog --clear --no-shadow --no-ok --backtitle "REBOOT REQUIRED" --title "Reboot Required" --aspect 9 --msgbox "Network stack set. The System will reboot. Reconnect at: ${IPADDR%%/*}" 5 95
-        reboot
-      fi
-    done
-  fi
-}
 
 # ========= INTERNET CONNECTIVITY CHECK =========
 check_internet_connectivity() {
@@ -227,6 +255,303 @@ Direct IP (8.8.8.8): $ip_test " 7 50
       exit 1
     fi
   fi
+}
+
+configure_network() {
+    local step=0
+    local INTERFACE CONNECTION IPADDRESS IPADDR GW DNSSERVER HOSTNAME DNSSEARCH
+    local CURRENT_GW CURRENT_DNS CURRENT_SEARCH CURRENT_FQDN
+
+    while true; do
+        case $step in
+
+            0)
+                declare -A cs interface_map connection_map ip_map
+                local args=()
+
+                printf -v h "%-12s %-38s %-18s %-12s %-8s" \
+                    "DEVICE" "UUID" "IP ADDRESS" "METHOD" "STATUS"
+
+                args+=(
+                    "CONNECTION" "$h"
+                    "----------" "------------ -------------------------------------- ------------------ ------------ --------"
+                )
+
+                while IFS=':' read -r name uuid active device type; do
+                    name="${name//\\/}"
+                    local ip method status
+
+                    ip=$(nmcli -g IP4.ADDRESS device show "$device" 2>/dev/null | head -n 1)
+                    method=$(nmcli -g ipv4.method connection show "$name" 2>/dev/null | head -n 1)
+                    method="${method:-unknown}"
+
+                    [ "$active" = "yes" ] && status="ACTIVE" || status="INACTIVE"
+
+                    if [ "$active" = "yes" ] && \
+                       [ -n "$device" ] && \
+                       [ "$type" != "loopback" ] && \
+                       [ "$device" != "lo" ]; then
+
+                        cs["$name"]="v"
+                        interface_map["$name"]="$device"
+                        connection_map["$name"]="$name"
+                        ip_map["$name"]="$ip"
+
+                        printf -v det "%-12s %-38s %-18s %-12s %-8s" \
+                            "$device" "$uuid" "$ip" "$method" "$status"
+                        args+=("$name" "$det")
+                    else
+                        cs["$name"]="d"
+                        printf -v det "\Z1%-12s %-38s %-18s %-12s %-8s\Z0" \
+                            "$device" "$uuid" "$ip" "$method" "$status"
+                        args+=("$name" "$det")
+                    fi
+                done < <(nmcli -t -f NAME,UUID,ACTIVE,DEVICE,TYPE connection show)
+
+                local sel ec
+                sel=$(dialog \
+                    --colors \
+                    --no-cancel \
+                    --extra-button \
+                    --extra-label "Manage Network" \
+                    --output-fd 1 \
+                    --menu "Select a connection (Red items are read-only diagnostics):" \
+                    22 125 12 \
+                    "${args[@]}")
+                ec=$?
+                clear
+
+                if [ $ec -eq 3 ]; then
+                    nmtui
+                    clear
+                    continue
+                fi
+
+                if [ "$sel" = "CONNECTION" ]; then
+                    continue
+                fi
+
+                if [ "${cs[$sel]}" = "v" ]; then
+                    INTERFACE="${interface_map[$sel]}"
+                    CONNECTION="${connection_map[$sel]}"
+                    local SEL_IP="${ip_map[$sel]}"
+
+                    dialog \
+                        --title "Confirm Selection" \
+                        --yesno "\nYou have selected the following configuration:\n\nCONNECTION: $CONNECTION\nINTERFACE: $INTERFACE\nIP ADDRESS: $SEL_IP\n\nIs this correct?" \
+                        12 60
+
+                    [ $? -ne 0 ] && continue
+                    clear
+
+                    echo "DEBUG: INTERFACE=$INTERFACE" >> /tmp/kvm_debug.log
+                    echo "DEBUG: CONNECTION=$CONNECTION" >> /tmp/kvm_debug.log
+
+                    IPADDRESS="$SEL_IP"
+                    local ip_method
+                    ip_method=$(nmcli -g ipv4.method connection show "$CONNECTION" | tr -d ' ' | xargs)
+
+                    if [[ "$ip_method" == "manual" ]]; then
+                        dialog \
+                            --title "Static IP Detected" \
+                            --infobox "Interface '$INTERFACE' is already using a static IP" \
+                            6 70
+                        sleep 3
+                        export INTERFACE CONNECTION IPADDRESS
+                        break
+                    else
+                        CURRENT_GW=$(nmcli -g IP4.GATEWAY device show "$INTERFACE" 2>/dev/null | head -n 1)
+                        CURRENT_DNS=$(nmcli -g IP4.DNS device show "$INTERFACE" 2>/dev/null | head -n 1)
+                        CURRENT_SEARCH=$(nmcli -g IP4.DOMAIN device show "$INTERFACE" 2>/dev/null | head -n 1)
+                        [[ "$CURRENT_SEARCH" == *".local" ]] && CURRENT_SEARCH=""
+                        CURRENT_FQDN=$(hostnamectl --fqdn 2>/dev/null || hostname -f 2>/dev/null)
+                        [[ "$CURRENT_FQDN" == *".local" ]] && CURRENT_FQDN=""
+                        step=1
+                    fi
+                else
+                    dialog --msgbox \
+                        "\nError: Selected profile is restricted or INACTIVE.\n\nShown only for informational purposes." \
+                        9 55
+                fi
+                ;;
+
+            1)
+                IPADDR=$(dialog \
+                    --backtitle "Interface Setup" \
+                    --title "Static IP Address Required" \
+                    --no-cancel \
+                    --help-button \
+                    --help-label "Back" \
+                    --output-fd 1 \
+                    --inputbox "***DHCP DETECTED on '$INTERFACE'***\n\nEnter static IP in CIDR format (Example: 192.168.1.100/24):" \
+                    9 80 "$IPADDRESS")
+
+                if [ $? -eq 2 ]; then
+                    step=0
+                    continue
+                fi
+
+                if validate_cidr "$IPADDR"; then
+                    step=2
+                else
+                    dialog --msgbox "Invalid CIDR format. Try again." 6 40
+                fi
+                ;;
+
+            2)
+                GW=$(dialog \
+                    --backtitle "Interface Setup" \
+                    --title "Gateway" \
+                    --no-cancel \
+                    --help-button \
+                    --help-label "Back" \
+                    --output-fd 1 \
+                    --inputbox "Enter default gateway:" \
+                    8 60 "$CURRENT_GW")
+
+                if [ $? -eq 2 ]; then
+                    step=1
+                    continue
+                fi
+
+                if validate_ip "$GW"; then
+                    step=3
+                else
+                    dialog --msgbox "Invalid IP address. Try again." 6 40
+                fi
+                ;;
+
+            3)
+                DNSSERVER=$(dialog \
+                    --backtitle "Interface Setup" \
+                    --title "DNS Server" \
+                    --no-cancel \
+                    --help-button \
+                    --help-label "Back" \
+                    --output-fd 1 \
+                    --inputbox "Enter Upstream DNS server IP:" \
+                    8 60 "$CURRENT_DNS")
+
+                if [ $? -eq 2 ]; then
+                    step=2
+                    continue
+                fi
+
+                if validate_ip "$DNSSERVER"; then
+                    step=4
+                else
+                    dialog --msgbox "Invalid IP address. Try again." 6 40
+                fi
+                ;;
+
+            4)
+                HOSTNAME=$(dialog \
+                    --backtitle "Interface Setup" \
+                    --title "FQDN Assignment" \
+                    --no-cancel \
+                    --help-button \
+                    --help-label "Back" \
+                    --output-fd 1 \
+                    --inputbox "Enter Fully Qualified Domain Name.\n\nMust have at least three components:\n - 1 component for the host itself\n - At least 2 components for the domain\n\nExample of 3-components: ://company.com\nBest choice is 4-components: ://company.com\n\nDO NOT use '.local' suffixes:\n" \
+                    16 75 "$CURRENT_FQDN")
+
+                if [ $? -eq 2 ]; then
+                    step=3
+                    continue
+                fi
+
+                if [[ "$HOSTNAME" == *".local" ]]; then
+                    dialog --msgbox \
+                        "CRITICAL ERROR: The '.local' TLD breaks Active Directory, mDNS, and local routing.\n\nPlease choose a different domain extension (Example: company.com)." \
+                        9 65
+                    continue
+                fi
+
+                if ! [[ "$HOSTNAME" =~ ^[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9._-]+$ ]]; then
+                    dialog --msgbox \
+                        "INVALID FORMAT: An FQDN requires a hostname and a domain name combined with a dot.\n\nMinimum requirement is 3-components: ://company.com\nBest choice is 4-components: ://company.com" \
+                        10 70
+                    continue
+                fi
+
+                if validate_fqdn "$HOSTNAME" && check_hostname_in_domain "$HOSTNAME"; then
+                    step=5
+                else
+                    dialog --msgbox "Invalid FQDN or hostname repeated in domain. Try again." 7 60
+                fi
+                ;;
+
+            5)
+                if [[ -z "$CURRENT_SEARCH" ]]; then
+                    CURRENT_SEARCH="${HOSTNAME#*.}"
+                fi
+
+                DNSSEARCH=$(dialog \
+                    --backtitle "Interface Setup" \
+                    --title "DNS Search" \
+                    --no-cancel \
+                    --help-button \
+                    --help-label "Back" \
+                    --output-fd 1 \
+                    --inputbox "Enter domain search suffixes separated by commas (Example: ://company.com, company.com):\nDO NOT use '.local':" \
+                    9 65 "$CURRENT_SEARCH")
+
+                if [ $? -eq 2 ]; then
+                    step=4
+                    continue
+                fi
+
+                if [[ "$DNSSEARCH" == *".local" ]]; then
+                    dialog --msgbox \
+                        "CRITICAL ERROR: Search suffixes ending in '.local' are explicitly banned for Active Directory." \
+                        7 65
+                    continue
+                fi
+
+                if [[ -n "$DNSSEARCH" ]]; then
+                    step=6
+                else
+                    dialog --msgbox "Search domain cannot be blank." 6 40
+                fi
+                ;;
+
+            6)
+                dialog \
+                    --backtitle "Interface Setup" \
+                    --title "Confirm Settings" \
+                    --yesno "Apply these settings?\n\nInterface: $INTERFACE\nIP: $IPADDR\nGW: $GW\nFQDN: $HOSTNAME\nDNS: $DNSSERVER\nSearch: $DNSSEARCH" \
+                    12 60
+
+                if [[ $? -eq 0 ]]; then
+                    local clean_search="${DNSSEARCH//[[:space:]]/}"
+                    clean_search="${clean_search//,/ }"
+
+                    nmcli con mod "$CONNECTION" ipv4.address "$IPADDR"
+                    nmcli con mod "$CONNECTION" ipv4.gateway "$GW"
+                    nmcli con mod "$CONNECTION" ipv4.method manual
+                    nmcli con mod "$CONNECTION" ipv4.dns "$DNSSERVER"
+                    nmcli con mod "$CONNECTION" ipv4.dns-search "$clean_search"
+
+                    hostnamectl set-hostname "$HOSTNAME"
+
+                    dialog \
+                        --clear \
+                        --no-shadow \
+                        --no-ok \
+                        --backtitle "REBOOT REQUIRED" \
+                        --title "Reboot Required" \
+                        --aspect 9 \
+                        --msgbox "Network stack set. The System will reboot. Reconnect at: ${IPADDR%%/*}" \
+                        5 95
+
+                    reboot
+                else
+                    step=5
+                fi
+                ;;
+
+        esac
+    done
 }
 
 # ========= HOSTNAME VALIDATION =========
@@ -507,117 +832,10 @@ configure_dhcp_server() {
   }
 
   # ───────────────────── shared IP/CIDR + domain helpers ──────────────────────
-  is_valid_ip(){
-    [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-    IFS='.'
-    local o; for o in $1; do [[ $o -ge 0 && $o -le 255 ]] || return 1; done
-  }
-  ip_to_int(){ IFS='.'; read -r a b c d <<<"$1"; echo $(( (a<<24)+(b<<16)+(c<<8)+d )); }
-  int_to_ip(){ local i=$1; printf "%d.%d.%d.%d" $(( (i>>24)&255 )) $(( (i>>16)&255 )) $(( (i>>8)&255 )) $(( i&255 )); }
-  cidr_to_netmask(){ local c=$1; local m=$(( 0xFFFFFFFF << (32-c) & 0xFFFFFFFF )); int_to_ip "$m"; }
-  netmask_to_cidr(){
-    local ip=$1; is_valid_ip "$ip" || { echo -1; return; }
-    local n=$(ip_to_int "$ip") c=0 saw_zero=0
-    for ((i=31;i>=0;i--)); do
-      if (( (n>>i)&1 )); then (( saw_zero )) && { echo -1; return; }; ((c++))
-      else saw_zero=1
-      fi
-    done
-    echo "$c"
-  }
-  network_from_ip_cidr(){ local ip=$1 c=$2; local m=$(( 0xFFFFFFFF << (32-c) & 0xFFFFFFFF )); int_to_ip $(( $(ip_to_int "$ip") & m )); }
-  broadcast_from_ip_cidr(){ local ip=$1 c=$2; local m=$(( 0xFFFFFFFF << (32-c) & 0xFFFFFFFF )); int_to_ip $(( $(ip_to_int "$ip") | (~m & 0xFFFFFFFF) )); }
-  ip_in_cidr(){
-    local ip=$1 net=$2 c=$3
-    local m=$(( 0xFFFFFFFF << (32-c) & 0xFFFFFFFF ))
-    (( ( $(ip_to_int "$ip") & m ) == ( $(ip_to_int "$net") & m ) ))
-  }
-
-is_valid_domain() {
-    local input_domain="$1"
-    
-    # Dynamic Nameref Assignment for error mesages:
-    # If $2 is provided, err_msg points to that variable.
-    # If $2 is empty, err_msg points to an internal dummy variable that is safely discarded.
-    local dummy_err_discard
-    if [[ -n "$2" ]]; then
-        local -n err_msg="$2"
-    else
-        local -n err_msg="dummy_err_discard"
-    fi
-    
-    err_msg="" # Safely clears either the user's variable or the dummy variable
-
-    # 1. Reject empty inputs
-    # idn2 will not error on empty input
-    if [[ -z "$input_domain" ]]; then
-        err_msg="Domain input cannot be empty."
-        return 1
-    fi
-
-    # 2. Process and validate via idn2
-    # 
-    # LOGIC EXPLANATION FOR IDN2 BEHAVIOR:
-    # We downcase the string first for cleaner comparisons. We then run idn2 with
-    # --usestd3asciirules for multi-layered validation:
-    # - If the input violates strict rules (bad Unicode, labels >= 64 chars, total
-    #   domain length >= 256 chars, or bad character symbols), idn2 fails with exit code 1. 
-    #   We capture its exact stderr stream and pass it directly to err_msg.
-    # - If the input contains bad ASCII noise (spaces, '://'), idn2 does NOT fail;
-    #   it silently strips/alters the noise and exits 0. To catch this silent modification,
-    #   we compare idn2's output against the downcased original input. If they mismatch
-    #   and it isn't an intentional Punycode 'xn--' conversion, we know idn2 altered
-    #   illegal characters, and we block it.
-    # - If the input is clean ASCII, idn2 outputs the exact lowercase string (exit 0).
-    local lower_domain
-    lower_domain=$(echo "$input_domain" | tr '[:upper:]' '[:lower:]')
-
-    local ascii_domain
-    local idn2_err
-    
-    # Run idn2, capturing stdout into a variable and redirecting stderr to idn2_err
-    # note: you cannot combine the next two lines, because `local` will overwrite the "last return code" from idn2, but we need it ($?)
-    local result
-    result=$(idn2 --quiet --usestd3asciirules "$lower_domain" 2>&1)
-    
-    if (( $? != 0 )); then
-        err_msg="$result" # If idn2 failed, $result holds the exact error text
-        return 1
-    fi
-    
-    if [[ "$result" != "$lower_domain" && ! "$result" =~ ^xn-- ]]; then
-        err_msg="Domain contains illegal characters (like spaces or symbols) that were automatically altered or discarded."
-        return 1
-    fi
-
-    # 3. Enforce Samba AD specific suffix restriction (.local)
-    if [[ "$result" =~ \.local$ ]]; then
-        err_msg="Domains ending in '.local' are not allowed. This suffix conflicts with Multicast DNS (mDNS) used by Apple Bonjour, Linux Avahi, and network devices. Using '.local' for Active Directory causes frequent name resolution errors and device dropouts. Please choose a different suffix."
-        return 1
-    fi
-
-    # 4. Check for single-label
-    IFS='.' read -ra labels <<< "$result"
-    if (( ${#labels[@]} < 2 )); then
-        err_msg="Single-label domains (like '$lower_domain') are not allowed. While legacy networks historically used them, modern operating systems reject them, and they cause critical compatibility issues. You must use a fully qualified domain name. If your company owns a public domain name (e.g., 'company.com'), you should consider just using that, but adding an Active Directory prefix (to separate Internet from privileged internal traffic), resulting in something like 'ad.company.com'."
-        return 1
-    fi
-
-    #5. Check for empty segments (a.k.a. "labels", a.k.a. "domain components") (idn2 does not do this)
-    for label in "${labels[@]}"; do
-        if (( ${#label} < 1 )); then
-            err_msg="Domain contains an empty segment (e.g., consecutive dots like 'example..com')."
-            return 1
-        fi
-    done
-
-    return 0
-}
-
-  domain_name_err="" # set up a variable to capture error messages from is_valid_domain()
+ 
   # ───────────────────────────── dhcpd setup flow ─────────────────────────────
   dhcpd_setup() {
-    local ok=0 item
+    local ok=0 item domain_name_err=""
     local iface inet4_line INET4 DHCPCIDR NET_DETECTED NETMASK_DETECTED
     iface=$(nmcli -t -f DEVICE,STATE device status | awk -F: '$2=="connected"{print $1; exit}')
     [[ -z "$iface" ]] && { msgbox "DHCPD Setup" "No active interface found."; return 1; }
@@ -738,7 +956,8 @@ EOF
 
   # ───────────────────────────── Kea setup flow ───────────────────────────────
   kea_dhcp_setup() {
-    local KEA_CONF="/etc/kea/kea-dhcp4.conf"
+    local KEA_CONF="/etc/kea/kea-dhcp4.conf" domain_name_err=""
+    
     mkdir -p /etc/kea; touch "$KEA_CONF"
 
     local iface inet4_line INET4 CIDR NETMASK NETWORK BROADCAST
