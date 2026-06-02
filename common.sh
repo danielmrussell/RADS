@@ -27,7 +27,7 @@ check_samba_running() {
 # ========= VALIDATION HELPERS =========
 validate_cidr() { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$ ]]; }
 validate_ip()   { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
-validate_fqdn() { [[ "$1" =~ ^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$ ]]; }
+# validate_fqdn() { [[ "$1" =~ ^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$ ]]; }
 ip_to_int(){ IFS='.'; read -r a b c d <<<"$1"; echo $(( (a<<24)+(b<<16)+(c<<8)+d )); }
 int_to_ip(){ local i=$1; printf "%d.%d.%d.%d" $(( (i>>24)&255 )) $(( (i>>16)&255 )) $(( (i>>8)&255 )) $(( i&255 )); }
 cidr_to_netmask(){ local c=$1; local m=$(( 0xFFFFFFFF << (32-c) & 0xFFFFFFFF )); int_to_ip "$m"; }
@@ -452,7 +452,7 @@ configure_network() {
                     --help-button \
                     --help-label "Back" \
                     --output-fd 1 \
-                    --inputbox "Enter Fully Qualified Domain Name.\n\nMust have at least three components:\n - 1 component for the host itself\n - At least 2 components for the domain\n\nExample of 3-components: ://company.com\nBest choice is 4-components: ://company.com\n\nDO NOT use '.local' suffixes:\n" \
+                    --inputbox "Enter Fully Qualified Domain Name.\n\nMust have at least three components:\n - 1 component for the host itself\n - At least 2 components for the domain\n\nExample of 3-components: dc1.company.com\nBest choice is 4-components with an added one for the AD domain: dc1.ad.company.com\n\nDO NOT use '.local' suffixes:\n" \
                     16 75 "$CURRENT_FQDN")
 
                 if [ $? -eq 2 ]; then
@@ -469,12 +469,12 @@ configure_network() {
 
                 if ! [[ "$HOSTNAME" =~ ^[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9._-]+$ ]]; then
                     dialog --msgbox \
-                        "INVALID FORMAT: An FQDN requires a hostname and a domain name combined with a dot.\n\nMinimum requirement is 3-components: ://company.com\nBest choice is 4-components: ://company.com" \
+                        "INVALID FORMAT: An FQDN requires a hostname and a domain name combined with a dot.\n\nMinimum requirement is 3-components, e.g.: dc1.company.com\nBest choice is 4-components: dc1.ad.company.com" \
                         10 70
                     continue
                 fi
 
-                if validate_fqdn "$HOSTNAME" && check_hostname_in_domain "$HOSTNAME"; then
+                if is_valid_domain "$HOSTNAME" && check_hostname_in_domain "$HOSTNAME"; then
                     step=5
                 else
                     dialog --msgbox "Invalid FQDN or hostname repeated in domain. Try again." 7 60
@@ -565,7 +565,7 @@ validate_and_set_hostname() {
         "Current hostname is '$current_hostname'. Please enter a new FQDN (e.g., server.example.com):" \
         8 60 3>&1 1>&2 2>&3)
 
-      if validate_fqdn "$NEW_HOSTNAME" && check_hostname_in_domain "$NEW_HOSTNAME"; then
+      if is_valid_domain "$NEW_HOSTNAME" && check_hostname_in_domain "$NEW_HOSTNAME"; then
         hostnamectl set-hostname "$NEW_HOSTNAME"
         dialog --backtitle "Configure Hostname" --title "Hostname Set" --msgbox "Hostname updated to: $NEW_HOSTNAME" 6 50
         break
