@@ -125,7 +125,7 @@ is_valid_domain() {
   # 4. Check for single-label
   IFS='.' read -ra labels <<< "$result"
   if (( ${#labels[@]} < 2 )); then
-      err_msg="Single-label domains (like '$lower_domain') are not allowed. While legacy networks historically used them, modern operating systems reject them, and they cause critical compatibility issues. You must use a fully qualified domain name. If your company owns a public domain name (e.g., 'company.com'), you should consider just using that, but adding an Active Directory prefix (to separate Internet from privileged internal traffic), resulting in something like 'ad.company.com'."
+      err_msg="Single-label domains (like '$lower_domain') are not allowed. While legacy networks historically used them, modern operating systems reject them, and they cause critical compatibility issues. You must use a fully qualified domain name. If your company owns a public domain name (e.g., 'example.com'), you should consider just using that, but adding an Active Directory prefix (to separate Internet from privileged internal traffic), resulting in something like 'ad.example.com'."
       return 1
   fi
 
@@ -155,35 +155,22 @@ is_host_ip() {
   [[ "$ip_dec" -eq "$network" || "$ip_dec" -eq "$broadcast" ]] && return 1 || return 0
 }
 
+# It's bad to have a host (computer) with the same name as a domain-component in Active Directory.
+# So, for example, `mail.ad.mail.example.com` is bad and should be forbidden to prevent infractructure failures later.
 check_hostname_in_domain() {
   local fqdn="$1"
   local hostname="${fqdn%%.*}"
   local domain="${fqdn#*.}"
   [[ ! "$domain" =~ (^|\.)"$hostname"(\.|$) ]]
 }
-isValidIP() {
-  [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-  IFS='.' read -r o1 o2 o3 o4 <<< "$1"
-  (( o1 <= 255 && o2 <= 255 && o3 <= 255 && o4 <= 255 )) || return 1
-  return 0
-}
 
-isValidNetmask() {
-  local valid=(
-    255.255.255.0 255.255.0.0 255.0.0.0
-    255.255.254.0 255.255.252.0 255.255.248.0 255.255.240.0
-    255.255.224.0 255.255.192.0 255.255.128.0
-  )
-  [[ " ${valid[*]} " =~ " $1 " ]]
-}
-
-isIPInRange() {
-  local ip=$1
-  local ipnum=$(ipToNumber "$ip")
-  local netnum=$(ipToNumber "$NETWORK")
-  local broadnum=$(ipToNumber "$BROADCAST")
-  [[ $ipnum -ge $netnum && $ipnum -le $broadnum ]]
-}
+# isIPInRange() {
+#  local ip=$1
+#  local ipnum=$(ipToNumber "$ip")
+#  local netnum=$(ipToNumber "$NETWORK")
+#  local broadnum=$(ipToNumber "$BROADCAST")
+#  [[ $ipnum -ge $netnum && $ipnum -le $broadnum ]]
+# }
 
 # ========= SYSTEM CHECKS =========
 check_root_and_os() {
@@ -225,9 +212,6 @@ check_and_enable_selinux() {
     fi
   fi
 }
-
-
-
 
 # ========= INTERNET CONNECTIVITY CHECK =========
 check_internet_connectivity() {
@@ -352,11 +336,7 @@ configure_network() {
                     ip_method=$(nmcli -g ipv4.method connection show "$CONNECTION" | tr -d ' ' | xargs)
 
                     if [[ "$ip_method" == "manual" ]]; then
-                        dialog \
-                            --title "Static IP Detected" \
-                            --infobox "Interface '$INTERFACE' is already using a static IP" \
-                            6 70
-                        sleep 3
+                        dialog --title "Static IP Detected" --infobox "Interface '$INTERFACE' is already using a static IP" 6 70; sleep 3
                         export INTERFACE CONNECTION IPADDRESS
                         break
                     else
@@ -399,19 +379,9 @@ configure_network() {
                 ;;
 
             2)
-                GW=$(dialog \
-                    --backtitle "Interface Setup" \
-                    --title "Gateway" \
-                    --no-cancel \
-                    --help-button \
-                    --help-label "Back" \
-                    --output-fd 1 \
-                    --inputbox "Enter default gateway:" \
-                    8 60 "$CURRENT_GW")
-
+                GW=$(dialog --backtitle "Interface Setup" --title "Gateway" --no-cancel --help-button --help-label "Back" --output-fd 1 --inputbox "Enter default gateway:" 8 60 "$CURRENT_GW")
                 if [ $? -eq 2 ]; then
-                    step=1
-                    continue
+                    step=1; continue
                 fi
 
                 if validate_ip "$GW"; then
@@ -422,19 +392,9 @@ configure_network() {
                 ;;
 
             3)
-                DNSSERVER=$(dialog \
-                    --backtitle "Interface Setup" \
-                    --title "DNS Server" \
-                    --no-cancel \
-                    --help-button \
-                    --help-label "Back" \
-                    --output-fd 1 \
-                    --inputbox "Enter Upstream DNS server IP:" \
-                    8 60 "$CURRENT_DNS")
-
+                DNSSERVER=$(dialog --backtitle "Interface Setup" --title "DNS Server" --no-cancel --help-button --help-label "Back" --output-fd 1 --inputbox "Enter Upstream DNS server IP:" 8 60 "$CURRENT_DNS")
                 if [ $? -eq 2 ]; then
-                    step=2
-                    continue
+                    step=2; continue
                 fi
 
                 if validate_ip "$DNSSERVER"; then
@@ -445,39 +405,32 @@ configure_network() {
                 ;;
 
             4)
-                HOSTNAME=$(dialog \
-                    --backtitle "Interface Setup" \
-                    --title "FQDN Assignment" \
-                    --no-cancel \
-                    --help-button \
-                    --help-label "Back" \
-                    --output-fd 1 \
-                    --inputbox "Enter Fully Qualified Domain Name.\n\nMust have at least three components:\n - 1 component for the host itself\n - At least 2 components for the domain\n\nExample of 3-components: dc1.company.com\nBest choice is 4-components with an added one for the AD domain: dc1.ad.company.com\n\nDO NOT use '.local' suffixes:\n" \
-                    16 75 "$CURRENT_FQDN")
-
+                HOSTNAME=$(dialog --backtitle "Interface Setup" --title "FQDN Assignment" --no-cancel --help-button --help-label "Back" --output-fd 1 --inputbox "Enter Fully Qualified Domain Name.\n\nMust have at least three components:\n - 1 component for the host itself\n - At least 2 components for the domain\n\nExample of 3-components: dc1.example.com\nBest choice is 4-components with an added one for the AD domain: dc1.ad.example.com\n\nDO NOT use '.local' suffixes:\n" 16 75 "$CURRENT_FQDN")
                 if [ $? -eq 2 ]; then
-                    step=3
-                    continue
+                    step=3; continue
                 fi
 
                 if [[ "$HOSTNAME" == *".local" ]]; then
-                    dialog --msgbox \
-                        "CRITICAL ERROR: The '.local' TLD breaks Active Directory, mDNS, and local routing.\n\nPlease choose a different domain extension (Example: company.com)." \
-                        9 65
+                    dialog --msgbox "CRITICAL ERROR: The '.local' TLD breaks Active Directory, mDNS, and local routing.\n\nPlease choose a different domain extension (Example: example.com)." 9 65
                     continue
-                fi
-
-                if ! [[ "$HOSTNAME" =~ ^[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9._-]+$ ]]; then
-                    dialog --msgbox \
-                        "INVALID FORMAT: An FQDN requires a hostname and a domain name combined with a dot.\n\nMinimum requirement is 3-components, e.g.: dc1.company.com\nBest choice is 4-components: dc1.ad.company.com" \
-                        10 70
+                elif [[ "$HOSTNAME" == "localhost.localdomain" ]]; then
+                    dialog --msgbox "CRITICAL ERROR: The hostname is set to 'localhost.localdomain'. Please set it to a real name." 9 65
                     continue
-                fi
-
-                if is_valid_domain "$HOSTNAME" && check_hostname_in_domain "$HOSTNAME"; then
-                    step=5
+                elif ! is_valid_domain "$HOSTNAME" ; then
+                    dialog --msgbox "INVALID FORMAT: An FQDN requires a hostname and a domain name combined with a dot.\n\n\
+                    Minimum requirement is 3-components, e.g.: dc1.example.com\nBest choice is 4-components: dc1.ad.example.com" 10 70
+                    continue
+                elif "$HOSTNAME" is_hostname_repeated_in_domain "$HOSTNAME"; then
+                  dialog --title "Active Directory FQDN Warning" --msgbox "CRITICAL ERROR: \n\
+                    You entered an FQDN where the hostname is repeated as a domain component.\n\n\
+                    Example of what NOT to do: \n\
+                    ad.ad.example.com\n \
+                    (Here, 'ad' is the name of both the host and of a sub-domain)\n\n\
+                    Example of a correct FQDN:\n\
+                    dc1.ad.example.com\n\n\
+                    This practice causes DNS resolution problems, Kerberos/SPN authentication failures, certificate issues, and other complications in Active Directory." 22 75
                 else
-                    dialog --msgbox "Invalid FQDN or hostname repeated in domain. Try again." 7 60
+                    step=5
                 fi
                 ;;
 
@@ -486,25 +439,13 @@ configure_network() {
                     CURRENT_SEARCH="${HOSTNAME#*.}"
                 fi
 
-                DNSSEARCH=$(dialog \
-                    --backtitle "Interface Setup" \
-                    --title "DNS Search" \
-                    --no-cancel \
-                    --help-button \
-                    --help-label "Back" \
-                    --output-fd 1 \
-                    --inputbox "Enter domain search suffixes separated by commas (Example: ad.company.com, company.com):\nDO NOT use '.local':" \
-                    9 65 "$CURRENT_SEARCH")
-
+                DNSSEARCH=$(dialog --backtitle "Interface Setup" --title "DNS Search" --no-cancel --help-button --help-label "Back" --output-fd 1 --inputbox "Enter domain search suffixes separated by commas (Example: ad.example.com, example.com):\nDO NOT use '.local':" 9 65 "$CURRENT_SEARCH")
                 if [ $? -eq 2 ]; then
-                    step=4
-                    continue
+                    step=4; continue
                 fi
 
                 if [[ "$DNSSEARCH" == *".local" ]]; then
-                    dialog --msgbox \
-                        "CRITICAL ERROR: Search suffixes ending in '.local' are explicitly banned for Active Directory." \
-                        7 65
+                    dialog --msgbox "CRITICAL ERROR: Search suffixes ending in '.local' are explicitly banned for Active Directory." 7 65
                     continue
                 fi
 
@@ -516,12 +457,7 @@ configure_network() {
                 ;;
 
             6)
-                dialog \
-                    --backtitle "Interface Setup" \
-                    --title "Confirm Settings" \
-                    --yesno "Apply these settings?\n\nInterface: $INTERFACE\nIP: $IPADDR\nGW: $GW\nFQDN: $HOSTNAME\nDNS: $DNSSERVER\nSearch: $DNSSEARCH" \
-                    12 60
-
+                dialog --backtitle "Interface Setup" --title "Confirm Settings" --yesno "Apply these settings?\n\nInterface: $INTERFACE\nIP: $IPADDR\nGW: $GW\nFQDN: $HOSTNAME\nDNS: $DNSSERVER\nSearch: $DNSSEARCH" 12 60
                 if [[ $? -eq 0 ]]; then
                     local clean_search="${DNSSEARCH//[[:space:]]/}"
                     clean_search="${clean_search//,/ }"
@@ -533,23 +469,12 @@ configure_network() {
                     nmcli con mod "$CONNECTION" ipv4.dns-search "$clean_search"
 
                     hostnamectl set-hostname "$HOSTNAME"
-
-                    dialog \
-                        --clear \
-                        --no-shadow \
-                        --no-ok \
-                        --backtitle "REBOOT REQUIRED" \
-                        --title "Reboot Required" \
-                        --aspect 9 \
-                        --msgbox "Network stack set. The System will reboot. Reconnect at: ${IPADDR%%/*}" \
-                        5 95
-
+                    dialog -clear --no-shadow --no-ok --backtitle "REBOOT REQUIRED" --title "Reboot Required" --aspect 9 --msgbox "Network stack set. The System will reboot. Reconnect at: ${IPADDR%%/*}" 5 95
                     reboot
                 else
                     step=5
                 fi
                 ;;
-
         esac
     done
 }
