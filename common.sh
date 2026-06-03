@@ -157,7 +157,7 @@ is_host_ip() {
 
 # It's bad to have a host (computer) with the same name as a domain-component in Active Directory.
 # So, for example, `mail.ad.mail.example.com` is bad and should be forbidden to prevent infractructure failures later.
-check_hostname_in_domain() {
+is_hostname_repeated_in_domain() {
   local fqdn="$1"
   local hostname="${fqdn%%.*}"
   local domain="${fqdn#*.}"
