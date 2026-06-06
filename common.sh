@@ -243,46 +243,42 @@ Direct IP (8.8.8.8): $ip_test " 7 50
 
 configure_network() {
     local step=0 selection ec status
-    local INTERFACE CONNECTION IPADDRESS GATEWAY DNSSERVER HOSTNAME SEARCH_DOMAINS
+    
+    # The variables of each interface, for display purposes.
+    local name uuid active device type
+    local -A validity_map interface_map connection_map ips_map table_rows=()
+    
+    # The current settings of the selected interface
     local CURRENT_GATEWAY CURRENT_DNSSERVERS CURRENT_SEARCH_DOMAINS CURRENT_FQDN CURRENT_IP_METHOD
-
+    
+    # The user's new settings for the selected interface
+    local INTERFACE CONNECTION IPADDRESS GATEWAY DNSSERVER HOSTNAME SEARCH_DOMAINS
+    
     while true; do
         case $step in
             # Select the interface.
             0)
-                local -A validity_map interface_map connection_map ips_map
-                local table_rows=()
-
                 printf -v h "%-12s %-38s %-18s %-12s %-8s" "DEVICE" "UUID" "IP ADDRESS" "METHOD" "STATUS"
+                table_rows+=("CONNECTION" "$h" "----------" "------------ -------------------------------------- ------------------ ------------ --------")
 
-                table_rows+=(
-                    "CONNECTION" "$h"
-                    "----------" "------------ -------------------------------------- ------------------ ------------ --------"
-                )
-
+                # Build a table of interfaces and their main current settings for identification purposes.
                 while IFS=':' read -r name uuid active device type; do
                     name="${name//\\/}"
-                    
-
-                    ip=$(nmcli -g IP4.ADDRESS device show "$device" 2>/dev/null | head -n 1)
+                    ips=$(nmcli -g IP4.ADDRESS device show "$device" 2>/dev/null | head -n 1)
                     method=$(nmcli -g ipv4.method connection show "$name" 2>/dev/null | head -n 1)
                     method="${method:-unknown}"
 
                     [ "$active" = "yes" ] && status="ACTIVE" || status="INACTIVE"
 
                     if [ "$active" = "yes" ] && [ -n "$device" ] && [ "$type" != "loopback" ] && [ "$device" != "lo" ]; then
-                        validity_map["$name"]="v"
-                        interface_map["$name"]="$device"
-                        connection_map["$name"]="$name"
-                        ips_map["$name"]="$ip"
+                        validity_map["$name"]="v";  interface_map["$name"]="$device" connection_map["$name"]="$name"
+                        ips_map["$name"]="$ips"
 
-                        printf -v det "%-12s %-38s %-18s %-12s %-8s" \
-                            "$device" "$uuid" "$ip" "$method" "$status"
+                        printf -v det "%-12s %-38s %-18s %-12s %-8s" "$device" "$uuid" "$ip" "$method" "$status"
                         table_rows+=("$name" "$det")
                     else
                         validity_map["$name"]="d"
-                        printf -v det "\Z1%-12s %-38s %-18s %-12s %-8s\Z0" \
-                            "$device" "$uuid" "$ip" "$method" "$status"
+                        printf -v det "\Z1%-12s %-38s %-18s %-12s %-8s\Z0" "$device" "$uuid" "$ip" "$method" "$status"
                         table_rows+=("$name" "$det")
                     fi
                 done < <(nmcli -t -f NAME,UUID,ACTIVE,DEVICE,TYPE connection show)
