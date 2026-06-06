@@ -242,28 +242,27 @@ Direct IP (8.8.8.8): $ip_test " 7 50
 }
 
 configure_network() {
-    local step=0
-    local INTERFACE CONNECTION IPADDRESS IPADDR GW DNSSERVER HOSTNAME DNSSEARCH
-    local CURRENT_GW CURRENT_DNS CURRENT_SEARCH CURRENT_FQDN
+    local step=0 selection ec status
+    local INTERFACE CONNECTION IPADDRESS GATEWAY DNSSERVER HOSTNAME SEARCH_DOMAINS
+    local CURRENT_GATEWAY CURRENT_DNSSERVERS CURRENT_SEARCH_DOMAINS CURRENT_FQDN CURRENT_IP_METHOD
 
     while true; do
         case $step in
-
+            # Select the interface.
             0)
-                declare -A cs interface_map connection_map ip_map
-                local args=()
+                local -A validity_map interface_map connection_map ips_map
+                local table_rows=()
 
-                printf -v h "%-12s %-38s %-18s %-12s %-8s" \
-                    "DEVICE" "UUID" "IP ADDRESS" "METHOD" "STATUS"
+                printf -v h "%-12s %-38s %-18s %-12s %-8s" "DEVICE" "UUID" "IP ADDRESS" "METHOD" "STATUS"
 
-                args+=(
+                table_rows+=(
                     "CONNECTION" "$h"
                     "----------" "------------ -------------------------------------- ------------------ ------------ --------"
                 )
 
                 while IFS=':' read -r name uuid active device type; do
                     name="${name//\\/}"
-                    local ip method status
+                    
 
                     ip=$(nmcli -g IP4.ADDRESS device show "$device" 2>/dev/null | head -n 1)
                     method=$(nmcli -g ipv4.method connection show "$name" 2>/dev/null | head -n 1)
@@ -271,37 +270,25 @@ configure_network() {
 
                     [ "$active" = "yes" ] && status="ACTIVE" || status="INACTIVE"
 
-                    if [ "$active" = "yes" ] && \
-                       [ -n "$device" ] && \
-                       [ "$type" != "loopback" ] && \
-                       [ "$device" != "lo" ]; then
-
-                        cs["$name"]="v"
+                    if [ "$active" = "yes" ] && [ -n "$device" ] && [ "$type" != "loopback" ] && [ "$device" != "lo" ]; then
+                        validity_map["$name"]="v"
                         interface_map["$name"]="$device"
                         connection_map["$name"]="$name"
-                        ip_map["$name"]="$ip"
+                        ips_map["$name"]="$ip"
 
                         printf -v det "%-12s %-38s %-18s %-12s %-8s" \
                             "$device" "$uuid" "$ip" "$method" "$status"
-                        args+=("$name" "$det")
+                        table_rows+=("$name" "$det")
                     else
-                        cs["$name"]="d"
+                        validity_map["$name"]="d"
                         printf -v det "\Z1%-12s %-38s %-18s %-12s %-8s\Z0" \
                             "$device" "$uuid" "$ip" "$method" "$status"
-                        args+=("$name" "$det")
+                        table_rows+=("$name" "$det")
                     fi
                 done < <(nmcli -t -f NAME,UUID,ACTIVE,DEVICE,TYPE connection show)
 
-                local sel ec
-                sel=$(dialog \
-                    --colors \
-                    --no-cancel \
-                    --extra-button \
-                    --extra-label "Manage Network" \
-                    --output-fd 1 \
-                    --menu "Select a connection (Red items are read-only diagnostics):" \
-                    22 125 12 \
-                    "${args[@]}")
+                
+                selection=$(dialog --colors --no-cancel --extra-button --extra-label "Manage Network" --output-fd 1 --menu "Select a connection (Red items are read-only diagnostics):" 2 125 12 "${table_rows[@]}")
                 ec=$?
                 clear
 
@@ -311,19 +298,16 @@ configure_network() {
                     continue
                 fi
 
-                if [ "$sel" = "CONNECTION" ]; then
+                if [ "$selection" = "CONNECTION" ]; then
                     continue
                 fi
 
-                if [ "${cs[$sel]}" = "v" ]; then
-                    INTERFACE="${interface_map[$sel]}"
-                    CONNECTION="${connection_map[$sel]}"
-                    local SEL_IP="${ip_map[$sel]}"
+                if [ "${validity_map[$selection]}" = "v" ]; then
+                    INTERFACE="${interface_map[$selection]}"
+                    CONNECTION="${connection_map[$selection]}"
+                    local SEL_IP="${ips_map[$selection]}"
 
-                    dialog \
-                        --title "Confirm Selection" \
-                        --yesno "\nYou have selected the following configuration:\n\nCONNECTION: $CONNECTION\nINTERFACE: $INTERFACE\nIP ADDRESS: $SEL_IP\n\nIs this correct?" \
-                        12 60
+                    dialog --title "Confirm Selection" -yesno "\nYou have selected the following configuration:\n\nCONNECTION: $CONNECTION\nINTERFACE: $INTERFACE\nIP ADDRESSES: $SEL_IP\n\nIs this correct?" 12 60
 
                     [ $? -ne 0 ] && continue
                     clear
@@ -331,19 +315,18 @@ configure_network() {
                     echo "DEBUG: INTERFACE=$INTERFACE" >> /tmp/kvm_debug.log
                     echo "DEBUG: CONNECTION=$CONNECTION" >> /tmp/kvm_debug.log
 
-                    IPADDRESS="$SEL_IP"
-                    local ip_method
-                    ip_method=$(nmcli -g ipv4.method connection show "$CONNECTION" | tr -d ' ' | xargs)
+                    IPADDRESSES="$SEL_IP"
+                    CURRENT_IP_METHOD=$(nmcli -g ipv4.method connection show "$CONNECTION" | tr -d ' ' | xargs)
 
-                    if [[ "$ip_method" == "manual" ]]; then
+                    if [[ "$CURRENT_IP_METHOD" == "manual" ]]; then
                         dialog --title "Static IP Detected" --infobox "Interface '$INTERFACE' is already using a static IP" 6 70; sleep 3
-                        export INTERFACE CONNECTION IPADDRESS
+                        export INTERFACE CONNECTION IPADDRESSES
                         break
                     else
-                        CURRENT_GW=$(nmcli -g IP4.GATEWAY device show "$INTERFACE" 2>/dev/null | head -n 1)
-                        CURRENT_DNS=$(nmcli -g IP4.DNS device show "$INTERFACE" 2>/dev/null | head -n 1)
-                        CURRENT_SEARCH=$(nmcli -g IP4.DOMAIN device show "$INTERFACE" 2>/dev/null | head -n 1)
-                        [[ "$CURRENT_SEARCH" == *".local" ]] && CURRENT_SEARCH=""
+                        CURRENT_GATEWAY=$(nmcli -g IP4.GATEWAY device show "$INTERFACE" 2>/dev/null | head -n 1)
+                        CURRENT_DNSSERVERS=$(nmcli -g IP4.DNS device show "$INTERFACE" 2>/dev/null | head -n 1)
+                        CURRENT_SEARCH_DOMAINS=$(nmcli -g IP4.DOMAIN device show "$INTERFACE" 2>/dev/null | head -n 1)
+                        [[ "$CURRENT_SEARCH_DOMAINS" == *".local" ]] && CURRENT_SEARCH_DOMAINS=""
                         CURRENT_FQDN=$(hostnamectl --fqdn 2>/dev/null || hostname -f 2>/dev/null)
                         [[ "$CURRENT_FQDN" == *".local" ]] && CURRENT_FQDN=""
                         step=1
@@ -356,17 +339,10 @@ configure_network() {
                 ;;
 
             1)
-                IPADDR=$(dialog \
-                    --backtitle "Interface Setup" \
-                    --title "Static IP Address Required" \
-                    --no-cancel \
-                    --help-button \
-                    --help-label "Back" \
-                    --output-fd 1 \
-                    --inputbox "***DHCP DETECTED on '$INTERFACE'***\n\nEnter static IP in CIDR format (Example: 192.168.1.100/24):" \
-                    9 80 "$IPADDRESS")
+                IPADDRESSES=$(dialog --backtitle "Interface Setup" --title "Static IP Address Required" --no-cancel --extra-button --extra-label "Back" --output-fd 1 --inputbox "***DHCP DETECTED on '$INTERFACE'***\n\nEnter static IP in CIDR format (Example: 192.168.1.100/24):" \
+                    9 80 "$IPADDRESSES")
 
-                if [ $? -eq 2 ]; then
+                if [ $? -eq 3 ]; then
                     step=0
                     continue
                 fi
@@ -379,12 +355,12 @@ configure_network() {
                 ;;
 
             2)
-                GW=$(dialog --backtitle "Interface Setup" --title "Gateway" --no-cancel --help-button --help-label "Back" --output-fd 1 --inputbox "Enter default gateway:" 8 60 "$CURRENT_GW")
-                if [ $? -eq 2 ]; then
+                GATEWAY=$(dialog --backtitle "Interface Setup" --title "Gateway" --no-cancel --extra-button --extra-label "Back" --output-fd 1 --inputbox "Enter default gateway:" 8 60 "$CURRENT_GATEWAY")
+                if [ $? -eq 3 ]; then
                     step=1; continue
                 fi
 
-                if validate_ip "$GW"; then
+                if validate_ip "$GATEWAY"; then
                     step=3
                 else
                     dialog --msgbox "Invalid IP address. Try again." 6 40
@@ -392,8 +368,8 @@ configure_network() {
                 ;;
 
             3)
-                DNSSERVER=$(dialog --backtitle "Interface Setup" --title "DNS Server" --no-cancel --help-button --help-label "Back" --output-fd 1 --inputbox "Enter Upstream DNS server IP:" 8 60 "$CURRENT_DNS")
-                if [ $? -eq 2 ]; then
+                DNSSERVER=$(dialog --backtitle "Interface Setup" --title "DNS Server" --no-cancel --extra-button --extra-label "Back" --output-fd 1 --inputbox "Enter Upstream DNS server IP:" 8 60 "$CURRENT_DNSSERVERS")
+                if [ $? -eq 3 ]; then
                     step=2; continue
                 fi
 
@@ -405,8 +381,8 @@ configure_network() {
                 ;;
 
             4)
-                HOSTNAME=$(dialog --backtitle "Interface Setup" --title "FQDN Assignment" --no-cancel --help-button --help-label "Back" --output-fd 1 --inputbox "Enter Fully Qualified Domain Name.\n\nMust have at least three components:\n - 1 component for the host itself\n - At least 2 components for the domain\n\nExample of 3-components: dc1.example.com\nBest choice is 4-components with an added one for the AD domain: dc1.ad.example.com\n\nDO NOT use '.local' suffixes:\n" 16 75 "$CURRENT_FQDN")
-                if [ $? -eq 2 ]; then
+                HOSTNAME=$(dialog --backtitle "Interface Setup" --title "FQDN Assignment" --no-cancel --extra-button --extra-label "Back" --output-fd 1 --inputbox "Enter Fully Qualified Domain Name.\n\nMust have at least three components:\n - 1 component for the host itself\n - At least 2 components for the domain\n\nExample of 3-components: dc1.example.com\nBest choice is 4-components with an added one for the AD domain: dc1.ad.example.com\n\nDO NOT use '.local' suffixes:\n" 16 75 "$CURRENT_FQDN")
+                if [ $? -eq 3 ]; then
                     step=3; continue
                 fi
 
@@ -435,21 +411,21 @@ configure_network() {
                 ;;
 
             5)
-                if [[ -z "$CURRENT_SEARCH" ]]; then
-                    CURRENT_SEARCH="${HOSTNAME#*.}"
+                if [[ -z "$CURRENT_SEARCH_DOMAINS" ]]; then
+                    CURRENT_SEARCH_DOMAINS="${HOSTNAME#*.}"
                 fi
 
-                DNSSEARCH=$(dialog --backtitle "Interface Setup" --title "DNS Search" --no-cancel --help-button --help-label "Back" --output-fd 1 --inputbox "Enter domain search suffixes separated by commas (Example: ad.example.com, example.com):\nDO NOT use '.local':" 9 65 "$CURRENT_SEARCH")
-                if [ $? -eq 2 ]; then
+                SEARCH_DOMAINS=$(dialog --backtitle "Interface Setup" --title "DNS Search" --no-cancel --extra-button --extra-label "Back" --output-fd 1 --inputbox "Enter domain search suffixes separated by commas (Example: ad.example.com, example.com):\nDO NOT use '.local':" 9 65 "$CURRENT_SEARCH_DOMAINS")
+                if [ $? -eq 3 ]; then
                     step=4; continue
                 fi
 
-                if [[ "$DNSSEARCH" == *".local" ]]; then
+                if [[ "$SEARCH_DOMAINS" == *".local" ]]; then
                     dialog --msgbox "CRITICAL ERROR: Search suffixes ending in '.local' are explicitly banned for Active Directory." 7 65
                     continue
                 fi
 
-                if [[ -n "$DNSSEARCH" ]]; then
+                if [[ -n "$SEARCH_DOMAINS" ]]; then
                     step=6
                 else
                     dialog --msgbox "Search domain cannot be blank." 6 40
@@ -457,13 +433,13 @@ configure_network() {
                 ;;
 
             6)
-                dialog --backtitle "Interface Setup" --title "Confirm Settings" --yesno "Apply these settings?\n\nInterface: $INTERFACE\nIP: $IPADDR\nGW: $GW\nFQDN: $HOSTNAME\nDNS: $DNSSERVER\nSearch: $DNSSEARCH" 12 60
+                dialog --backtitle "Interface Setup" --title "Confirm Settings" --yesno "Apply these settings?\n\nInterface: $INTERFACE\nIP: $IPADDR\nGATEWAY: $GATEWAY\nFQDN: $HOSTNAME\nDNS: $DNSSERVER\nSearch: $SEARCH_DOMAINS" 12 60
                 if [[ $? -eq 0 ]]; then
-                    local clean_search="${DNSSEARCH//[[:space:]]/}"
+                    local clean_search="${SEARCH_DOMAINS//[[:space:]]/}"
                     clean_search="${clean_search//,/ }"
 
                     nmcli con mod "$CONNECTION" ipv4.address "$IPADDR"
-                    nmcli con mod "$CONNECTION" ipv4.gateway "$GW"
+                    nmcli con mod "$CONNECTION" ipv4.gateway "$GATEWAY"
                     nmcli con mod "$CONNECTION" ipv4.method manual
                     nmcli con mod "$CONNECTION" ipv4.dns "$DNSSERVER"
                     nmcli con mod "$CONNECTION" ipv4.dns-search "$clean_search"
@@ -772,7 +748,7 @@ configure_dhcp_server() {
     NET_DETECTED=$(network_from_ip_cidr "$INET4" "$DHCPCIDR")
     NETMASK_DETECTED=$(cidr_to_netmask "$DHCPCIDR")
 
-    local DHCPBEGIP DHCPENDIP DHCPNETMASK DHCPDEFGW SUBNETDESC DOM_SUFFIX SEARCH_DOMAIN
+    local DHCPBEGIP DHCPENDIP DHCPNETMASK DHCPDEFGATEWAY SUBNETDESC DOM_SUFFIX SEARCH_DOMAIN
     local DEF_SUFFIX="$(hostname -d 2>/dev/null || true)"
     local DEF_SEARCH="${DEF_SUFFIX}"
 
@@ -802,9 +778,9 @@ configure_dhcp_server() {
       done
       # Default gateway
       while true; do
-        DHCPDEFGW=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
+        DHCPDEFGATEWAY=$($DIALOG --backtitle "$BACKTITLE" --stdout --inputbox \
           "Enter default gateway for clients (in $NET_DETECTED/$DHCPCIDR):" 8 78)
-        [[ -n "$DHCPDEFGW" ]] && is_valid_ip "$DHCPDEFGW" && ip_in_cidr "$DHCPDEFGW" "$NET_DETECTED" "$DHCPCIDR" && break
+        [[ -n "$DHCPDEFGATEWAY" ]] && is_valid_ip "$DHCPDEFGATEWAY" && ip_in_cidr "$DHCPDEFGATEWAY" "$NET_DETECTED" "$DHCPCIDR" && break
         msgbox "Invalid Gateway" "Gateway must be a valid IPv4 within $NET_DETECTED/$DHCPCIDR."
       done
       
@@ -847,7 +823,7 @@ Interface IP:  $INET4/$DHCPCIDR
 Subnet:        $NET_DETECTED
 Netmask:       $DHCPNETMASK
 Range:         $DHCPBEGIP  →  $DHCPENDIP
-Gateway:       $DHCPDEFGW
+Gateway:       $DHCPDEFGATEWAY
 Domain:        $DOM_SUFFIX
 Search:        $SEARCH_DOMAIN
 Description:   $SUBNETDESC
@@ -874,7 +850,7 @@ option domain-search "${SEARCH_DOMAIN}";
 subnet ${NET_DETECTED} netmask ${DHCPNETMASK} {
   range ${DHCPBEGIP} ${DHCPENDIP};
   option subnet-mask ${DHCPNETMASK};
-  option routers ${DHCPDEFGW};
+  option routers ${DHCPDEFGATEWAY};
 }
 EOF
   }
