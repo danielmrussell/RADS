@@ -246,64 +246,52 @@ configure_network() {
     
     # The variables of each interface, for display purposes.
     local name uuid active device type
-    local -A validity_map interface_map connection_map ips_map table_rows=()
+    local -A validity_map interface_map connection_map ip4_addresses_map table_rows=()
     
     # The current settings of the selected interface
-    local CURRENT_GATEWAY CURRENT_DNSSERVERS CURRENT_SEARCH_DOMAINS CURRENT_FQDN CURRENT_IP_METHOD
+    local CURRENT_IP4ADDRESSES CURRENT_GATEWAY CURRENT_DNSSERVERS CURRENT_SEARCH_DOMAINS CURRENT_FQDN CURRENT_IP_METHOD
     
     # The user's new settings for the selected interface
-    local INTERFACE CONNECTION IPADDRESS GATEWAY DNSSERVER HOSTNAME SEARCH_DOMAINS
+    local INTERFACE CONNECTION IP4ADDRESSES GATEWAY DNSSERVER HOSTNAME SEARCH_DOMAINS
     
     while true; do
         case $step in
             # Select the interface.
             0)
-                printf -v h "%-12s %-38s %-18s %-12s %-8s" "DEVICE" "UUID" "IP ADDRESS" "METHOD" "STATUS"
-                table_rows+=("CONNECTION" "$h" "----------" "------------ -------------------------------------- ------------------ ------------ --------")
+                printf -v table_header "%-12s %-38s %-18s %-12s %-8s" "DEVICE" "UUID" "FIRST IP ADDRESS" "METHOD" "STATUS"
+                table_rows+=("CONNECTION" "$table_header" "----------" "------------ -------------------------------------- ------------------ ------------ --------")
 
                 # Build a table of interfaces and their main current settings for identification purposes.
                 while IFS=':' read -r name uuid active device type; do
                     name="${name//\\/}"
-                    ips=$(nmcli -g IP4.ADDRESS device show "$device" 2>/dev/null | head -n 1)
-                    method=$(nmcli -g ipv4.method connection show "$name" 2>/dev/null | head -n 1)
+                    ip4_addresses=$(nmcli -g ipv4.addresses connection show "$name" 2>/dev/null | tr -d '[:space:]')
+                    method=$(nmcli -g ipv4.method connection show "$name" 2>/dev/null | tr -d '[:space:]')
                     method="${method:-unknown}"
 
                     [ "$active" = "yes" ] && status="ACTIVE" || status="INACTIVE"
 
                     if [ "$active" = "yes" ] && [ -n "$device" ] && [ "$type" != "loopback" ] && [ "$device" != "lo" ]; then
-                        validity_map["$name"]="v";  interface_map["$name"]="$device" connection_map["$name"]="$name"
-                        ips_map["$name"]="$ips"
-
-                        printf -v det "%-12s %-38s %-18s %-12s %-8s" "$device" "$uuid" "$ip" "$method" "$status"
-                        table_rows+=("$name" "$det")
+                        validity_map["$name"]="v";  interface_map["$name"]="$device"; connection_map["$name"]="$name"; ip4_addresses_map["$name"]="$ip4_addresses"
+                        printf -v det "%-12s %-38s %-18s %-12s %-8s" "$device" "$uuid" "$first_ip" "$method" "$status"
                     else
                         validity_map["$name"]="d"
-                        printf -v det "\Z1%-12s %-38s %-18s %-12s %-8s\Z0" "$device" "$uuid" "$ip" "$method" "$status"
-                        table_rows+=("$name" "$det")
+                        printf -v det "\Z1%-12s %-38s %-18s %-12s %-8s\Z0" "$device" "$uuid" "$first_ip" "$method" "$status"
                     fi
+                    table_rows+=("$name" "$det")
                 done < <(nmcli -t -f NAME,UUID,ACTIVE,DEVICE,TYPE connection show)
 
-                
                 selection=$(dialog --colors --no-cancel --extra-button --extra-label "Manage Network" --output-fd 1 --menu "Select a connection (Red items are read-only diagnostics):" 2 125 12 "${table_rows[@]}")
                 ec=$?
                 clear
 
                 if [ $ec -eq 3 ]; then
-                    nmtui
-                    clear
+                    nmtui; clear
+                elif [ "$selection" = "CONNECTION" ]; then
                     continue
-                fi
+                elif [ "${validity_map[$selection]}" = "v" ]; then
+                    INTERFACE="${interface_map[$selection]}"; CONNECTION="${connection_map[$selection]}";
 
-                if [ "$selection" = "CONNECTION" ]; then
-                    continue
-                fi
-
-                if [ "${validity_map[$selection]}" = "v" ]; then
-                    INTERFACE="${interface_map[$selection]}"
-                    CONNECTION="${connection_map[$selection]}"
-                    local SEL_IP="${ips_map[$selection]}"
-
-                    dialog --title "Confirm Selection" -yesno "\nYou have selected the following configuration:\n\nCONNECTION: $CONNECTION\nINTERFACE: $INTERFACE\nIP ADDRESSES: $SEL_IP\n\nIs this correct?" 12 60
+                    dialog --title "Confirm Selection" -yesno "\nYou have selected the following configuration:\n\nCONNECTION: $CONNECTION\nINTERFACE: $INTERFACE\nIP ADDRESSES: ${ip4_addresses_map[$selection]}\n\nIs this correct?" 12 60
 
                     [ $? -ne 0 ] && continue
                     clear
@@ -311,12 +299,12 @@ configure_network() {
                     echo "DEBUG: INTERFACE=$INTERFACE" >> /tmp/kvm_debug.log
                     echo "DEBUG: CONNECTION=$CONNECTION" >> /tmp/kvm_debug.log
 
-                    IPADDRESSES="$SEL_IP"
+                    CURRENT_IP4ADDRESSES="${ip4_addresses_map[$selection]}"
                     CURRENT_IP_METHOD=$(nmcli -g ipv4.method connection show "$CONNECTION" | tr -d ' ' | xargs)
 
                     if [[ "$CURRENT_IP_METHOD" == "manual" ]]; then
                         dialog --title "Static IP Detected" --infobox "Interface '$INTERFACE' is already using a static IP" 6 70; sleep 3
-                        export INTERFACE CONNECTION IPADDRESSES
+                        export INTERFACE CONNECTION IP4ADDRESSES
                         break
                     else
                         CURRENT_GATEWAY=$(nmcli -g IP4.GATEWAY device show "$INTERFACE" 2>/dev/null | head -n 1)
@@ -335,8 +323,8 @@ configure_network() {
                 ;;
 
             1)
-                IPADDRESSES=$(dialog --backtitle "Interface Setup" --title "Static IP Address Required" --no-cancel --extra-button --extra-label "Back" --output-fd 1 --inputbox "***DHCP DETECTED on '$INTERFACE'***\n\nEnter static IP in CIDR format (Example: 192.168.1.100/24):" \
-                    9 80 "$IPADDRESSES")
+                IP4ADDRESSES=$(dialog --backtitle "Interface Setup" --title "Static IP Address Required" --no-cancel --extra-button --extra-label "Back" --output-fd 1 --inputbox "***DHCP DETECTED on '$INTERFACE'***\n\nEnter static IP in CIDR format (Example: 192.168.1.100/24):" \
+                    9 80 "$IP4ADDRESSES")
 
                 if [ $? -eq 3 ]; then
                     step=0
