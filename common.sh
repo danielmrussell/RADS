@@ -242,79 +242,111 @@ Direct IP (8.8.8.8): $ip_test " 7 50
 }
 
 configure_network() {
-    local step=0 selection ec status
+    local step=0 selection ec status details table_rows()
     
     # The variables of each interface, for display purposes.
-    local name uuid active device type
-    local -A validity_map interface_map connection_map ip4_addresses_map table_rows=()
+    local name active interface type
+    local -A validity_map selection_map ip4_addresses_map ip6_addresses_map
+    local table_rows=()
+    local final_selections=() discarded_selections=() each_selection
     
     # The current settings of the selected interface
-    local CURRENT_IP4ADDRESSES CURRENT_GATEWAY CURRENT_DNSSERVERS CURRENT_SEARCH_DOMAINS CURRENT_FQDN CURRENT_IP_METHOD
+    local CURRENT_IP4ADDRESSES CURRENT_IP6ADDRESSES CURRENT_GATEWAY CURRENT_DNSSERVERS CURRENT_SEARCH_DOMAINS CURRENT_FQDN CURRENT_IP_METHOD
     
     # The user's new settings for the selected interface
-    local INTERFACE CONNECTION IP4ADDRESSES GATEWAY DNSSERVER HOSTNAME SEARCH_DOMAINS
+    local INTERFACE CONNECTION IP4ADDRESSES IP6ADDRESSES GATEWAY DNSSERVER HOSTNAME SEARCH_DOMAINS
     
     while true; do
         case $step in
             # Select the interface.
-            0)
-                printf -v table_header "%-12s %-38s %-18s %-12s %-8s" "DEVICE" "UUID" "FIRST IP ADDRESS" "METHOD" "STATUS"
-                table_rows+=("CONNECTION" "$table_header" "----------" "------------ -------------------------------------- ------------------ ------------ --------")
+            0) # Build a table of interfaces for the user to quickly identify which one(s) they want.
+                printf -v table_header "%-15s %-39s %-12s %-8s"\
+                "DEVICE"         "FIRST IP ADDRESS"                      "METHOD"     "STATUS"\n\
+                "--------------- --------------------------------------- ------------ --------")
 
                 # Build a table of interfaces and their main current settings for identification purposes.
-                while IFS=':' read -r name uuid active device type; do
-                    name="${name//\\/}"
-                    ip4_addresses=$(nmcli -g ipv4.addresses connection show "$name" 2>/dev/null | tr -d '[:space:]')
-                    ip6_addresses=$(nmcli -g ipv6.addresses connection show "$name" 2>/dev/null | tr -d '[:space:]')
-
-                    # Select the 1st ipv4 address if available, or the first ipv6 address if available, for display purposes only!
-                    first_ip=${ip4_addresses%%,*};
-                    if [[ -z "${first_ip}" ]]; then
-                      first_ip=${first_ip:-${ip6_addresses%%,*}}
-                      # If ip6, condense to 18 characters so it reasonably fits in our table.
-                      local first_part=$(echo -n $1 | awk -F: '{ printf "%s:", $1,$2 }') # up to 5 characters
-                      local last_part=$(echo -n $1 | awk -F: '{ printf ":%s:%s", $(NF-1),$NF }') # up to 10 characters
-                      first_ip="${first_part}...${last_part}" # add another 3 for the ellipses... that's 18 characters total.
-                    fi
-
-                    # Get the method. Must be changed to static later, if not already that.
-                    method=$(nmcli -g ipv4.method connection show "$name" 2>/dev/null | tr -d '[:space:]')
-                    method="${method:-unknown}"
-
-                    [ "$active" = "yes" ] && status="ACTIVE" || status="INACTIVE"
-
-                     if [ "$active" = "yes" ] && [ -n "$device" ] && [ "$type" != "loopback" ] && [ "$device" != "lo" ]; then
-                        validity_map["$name"]="v";  interface_map["$name"]="$device"; connection_map["$name"]="$name";
-                        ip4_addresses_map["$name"]="$ip4_addresses"; ip6_addresses_map["$name"]="$ip4_addresses"
-                        #              device uuid 1stip meth status
-                        printf -v det "%-12s %-38s %-18s %-12s %-8s" "$device" "$uuid" "$first_ip" "$method" "$status"
-                    else
-                        validity_map["$name"]="d"
+                while true; do
+                  while IFS=':' read -r name active type; do
+                      name="${name//\\/}" # in case netowrk manager escapes spaces, etc. in the connection name.
+                      # Stupidly, if a connection is not active (and it can't be, if there is no ethernet cable plugged in,
+                      # network manager will return it blank when using just `nmcli connection show` without specifying the connection name,
+                      # DESPITE the fact that it does in fact have an associated "device". But if you use `nmcli connection show $name`,
+                      # it not only returns entirely differently named fields, BUT also, `connection.interface` (instead of "device", wtf?),
+                      # is actually not blank. Stupid. Stupid. Stupid. network-manager has HORRIBLE, inconsistently, confusingly named fields
+                      # that change based on how you call it. It's awful. Just awful!!! So we query those properties that are being obtuse here.
+                      interface=$(nmcli -t -f connection.interface-name connection show $name 2>/dev/null | tr -d '[:space:]')
+                      ip4_addresses=$(nmcli -g ipv4.addresses connection show "$name" 2>/dev/null | tr -d '[:space:]')
+                      ip6_addresses=$(nmcli -g ipv6.addresses connection show "$name" 2>/dev/null | tr -d '[:space:]')
+  
+                      # Select the 1st ipv4 address if available, or the first ipv6 address if available, for display purposes only!
+                      # Interfaces can have multiple ips, and the user will selection exactly which IPs to bind to Samba AD DC, later,
+                      # but for easy recognition of the correct interface with its current connection settings, show the first here.
+                      first_ip=${ip4_addresses%%,*};
+                      if [[ -z "${first_ip}" ]]; then
+                        first_ip="${ip6_addresses%%,*}"
+                        # local ip6_segments
+                        # IFS=':' read -r -a ip6_segments <<< "${first_ip}"
+                        # Condense the massive ip6 addresses to 18 characters maximum
+                        # first_ip="${ip6_segments}:...:${ip6_segments[-2]}:${ip6_segments[-1]}"
+                      fi
+                      
+                      # Get the method. Must be changed to static later, if not already that.
+                      method=$(nmcli -g ipv4.method connection show "$name" 2>/dev/null | tr -d '[:space:]')
+                      method="${method:-unknown}"
+  
+                      [ "$active" = "yes" ] && status="ACTIVE" || status="INACTIVE"
+  
+                      if [ "$active" = "yes" ] && [ -n "$interface" ] && [ "$type" != "loopback" ] && [ "$interface" != "lo" ]; then
+                        validity_map["$interface"]=true;
+                        ip4_addresses_map["$interface"]="$ip4_addresses"; ip6_addresses_map["$interface"]="$ip4_addresses"
+                        #                  interface 1st_ip meth status
+                        printf -v details "%-15s %-39s %-12s %-8s" "$interface" $first_ip" "$method" "$status" ${selection_map[$interface]}
+                      else
+                        validity_map["$interface"]=false
                         # Color invalid rows red.
-                        #              red device uuid 1stip meth status
-                        printf -v det "\Z1%-12s %-38s %-18s %-12s %-8s\Z0" "$device" "$uuid" "$first_ip" "$method" "$status"
+                        #                 red interface 1st_ip meth status
+                        printf -v details "\Z1%-15s %-39s %-12s %-8s\Z0" "$interface" "$first_ip" "$method" "$status" off # hardcode off here to always deselect invalid interfaces
+                      fi
+                      table_rows+=("$det")
+                  done < <(nmcli -t -f name,active,type connection show)
+                  
+                  selections=$(dialog --checklist --colors --no-cancel --extra-button --extra-label "Manage Network" --separator "," --output-fd 1 --menu "Select interfaces for Samba AD to listen on. To change connections, hit Network Manager button.\n${table_header}" 0 0 12 "${table_rows[@]}")
+                  ec=$?
+                  clear
+  
+                  # User selected the Network Manager button.
+                  if [ $ec -eq 3 ]; then
+                      nmtui; clear; continue
+                  else
+                    # Remember what has been selected that is valid so we can bounce back to the checklist again if needed.
+                    selection_map=() # first, clear the selection map so that any that were selected earlier but aren't selected this time, won't still be recorded as such in the map
+                    final_selections=() # similarly, rebuild the final selections list
+                    for each_selection in $selections; do
+                      if [[ ${validity_map["$each_selection"]} ]]; then
+                        selection_map["$each_selection"]=on # remember what was selected so we can re-select it automatically when re-displaying the checklist
+                        final_selections+=("$each_selection")
+                      else
+                        selection_map["$each_selection"]=off # this isn't needed since we override with hardcoded "off" anyway whenever showing the checklist
+                        # Remember what was discarded to print to the user.
+                        discarded_selections+=("$each_selection")
+                      fi
                     fi
-                    table_rows+=("$name" "$det")
-                done < <(nmcli -t -f NAME,UUID,ACTIVE,DEVICE,TYPE connection show)
+  
+                
+  # TODO: change this to allow non-activated interfaces and pull their ips if they have... otherwise, user will override them in subsequent steps.
+  # i.e. don't make non-activated interfaces invalid. (Then, pretty much AFAIK, only `lo` becomes invalid)
+                  # If the discarded array was not empty, tell user what we discarded
+                  if (( ${#discarded_selections[@]} )); then
+                    IFS=',' dialog --title "Invalid Interfaces" --msgbox "The following interfaces are invalid: ${discarded_selections[*]}. If you want to use them, use Network Manager button to correct. A connection profile for each must be active. (And to do that, Ethernet cables must be plugged into ehternet ports, and wifi connections must be logged in.)" 6 40
+                    clear; continue
+                  else
+                    IFS=',' dialog --backtitle "Interface Setup" --title "Confirm Interfaces" --yesno "You have selected the following interfaces: ${final_selections[*]}" 12 60
+                    if [[ $? ]]
+                      clear; break
+                    fi
+                  fi
+                done
 
-                selection=$(dialog --colors --no-cancel --extra-button --extra-label "Manage Network" --output-fd 1 --menu "Select a connection (Red items are read-only diagnostics):" 2 125 12 "${table_rows[@]}")
-                ec=$?
-                clear
-
-                if [ $ec -eq 3 ]; then
-                    nmtui; clear
-                elif [ "$selection" = "CONNECTION" ]; then
-                    continue
-                elif [ "${validity_map[$selection]}" = "v" ]; then
-                    INTERFACE="${interface_map[$selection]}"; CONNECTION="${connection_map[$selection]}";
-
-                    dialog --title "Confirm Selection" -yesno "\nYou have selected the following configuration:\n\nCONNECTION: $CONNECTION\nINTERFACE: $INTERFACE\nIP ADDRESSES: ${ip4_addresses_map[$selection]}\n\nIs this correct?" 12 60
-
-                    [ $? -ne 0 ] && continue
-                    clear
-
-                    echo "DEBUG: INTERFACE=$INTERFACE" >> /tmp/kvm_debug.log
-                    echo "DEBUG: CONNECTION=$CONNECTION" >> /tmp/kvm_debug.log
 
                     CURRENT_IP4ADDRESSES="${ip4_addresses_map[$selection]}"
                     CURRENT_IP_METHOD=$(nmcli -g ipv4.method connection show "$CONNECTION" | tr -d ' ' | xargs)
