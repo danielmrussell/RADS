@@ -300,7 +300,7 @@ configure_network() {
                         validity_map["$interface"]=true;
                         ip4_addresses_map["$interface"]="$ip4_addresses"; ip6_addresses_map["$interface"]="$ip4_addresses"
                         #                  interface 1st_ip meth status
-                        printf -v details "%-15s %-39s %-12s %-8s" "$interface" $first_ip" "$method" "$status" ${selection_map[$interface]}
+                        printf -v details "%-15s %-39s %-12s %-8s" "$interface" $first_ip" "$method" "$status" ${selection_map[$interface]}"
                       else
                         validity_map["$interface"]=false
                         # Color invalid rows red.
@@ -310,12 +310,18 @@ configure_network() {
                       table_rows+=("$det")
                   done < <(nmcli -t -f name,active,type connection show)
                   
-                  selections=$(dialog --checklist --colors --no-cancel --extra-button --extra-label "Manage Network" --separator "," --output-fd 1 --menu "Select interfaces for Samba AD to listen on. To change connections, hit Network Manager button.\n${table_header}" 0 0 12 "${table_rows[@]}")
+                  selections=$(dialog --checklist --colors --backtitle "Interface Selection" dialog --title "Invalid Interfaces" --no-cancel --extra-button --extra-label "Network Manager" --separator "," --output-fd 1 --menu "Select interfaces for Samba AD to listen on. To change connections, hit Network Manager button.\n${table_header}" 0 0 12 "${table_rows[@]}")
                   ec=$?
                   clear
   
-                  # User selected the Network Manager button.
-                  if [ $ec -eq 3 ]; then
+                  # User select cancel button; abort.
+                  if [ $ec -eq 1 ]; then
+                      exit 1
+                  elif[ $ec -eq 2 ]; then
+                  # User selected the help button.
+                      dialog --backtitle "Interface Selection" --title "Help" --msgbox "Use this checklist to select interfaces you want Samba AD DC to listen on. Some identifying details are used to display each interface, but only one IP address will be shown per each here, even if an interface has multiple. You can modify, delete, or add IP addresses, and set the method to 'manual' using the Network Manager button at the bottom of the checklist. You will be able to choose which specific IP addresses on each interfaces are actually bound to Samba AD DC in a subsequent step. ." 10 50
+                      continue
+                  elif [ $ec -eq 3 ]; then
                       nmtui; clear; continue
                   else
                     # Remember what has been selected that is valid so we can bounce back to the checklist again if needed.
@@ -331,16 +337,15 @@ configure_network() {
                         discarded_selections+=("$each_selection")
                       fi
                     fi
-  
-                
+                  
   # TODO: change this to allow non-activated interfaces and pull their ips if they have... otherwise, user will override them in subsequent steps.
   # i.e. don't make non-activated interfaces invalid. (Then, pretty much AFAIK, only `lo` becomes invalid)
                   # If the discarded array was not empty, tell user what we discarded
                   if (( ${#discarded_selections[@]} )); then
-                    IFS=',' dialog --title "Invalid Interfaces" --msgbox "The following interfaces are invalid: ${discarded_selections[*]}. If you want to use them, use Network Manager button to correct. A connection profile for each must be active. (And to do that, Ethernet cables must be plugged into ehternet ports, and wifi connections must be logged in.)" 6 40
+                    IFS=',' --backtitle "Interface Selection" dialog --title "Invalid Interfaces" --msgbox "The following interfaces are invalid: ${discarded_selections[*]}. If you want to use them, use Network Manager button to correct. A connection profile for each must be active. (And to do that, Ethernet cables must be plugged into ehternet ports, and wifi connections must be logged in.)" 6 40
                     clear; continue
                   else
-                    IFS=',' dialog --backtitle "Interface Setup" --title "Confirm Interfaces" --yesno "You have selected the following interfaces: ${final_selections[*]}" 12 60
+                    IFS=',' dialog --backtitle "Interface Selection" --title "Confirm Interfaces" --yesno "You have selected the following interfaces: ${final_selections[*]}" 12 60
                     if [[ $? ]]
                       clear; break
                     fi
