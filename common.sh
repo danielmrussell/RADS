@@ -265,16 +265,33 @@ configure_network() {
                 while IFS=':' read -r name uuid active device type; do
                     name="${name//\\/}"
                     ip4_addresses=$(nmcli -g ipv4.addresses connection show "$name" 2>/dev/null | tr -d '[:space:]')
+                    ip6_addresses=$(nmcli -g ipv6.addresses connection show "$name" 2>/dev/null | tr -d '[:space:]')
+
+                    # Select the 1st ipv4 address if available, or the first ipv6 address if available, for display purposes only!
+                    first_ip=${ip4_addresses%%,*};
+                    if [[ -z "${first_ip}" ]]; then
+                      first_ip=${first_ip:-${ip6_addresses%%,*}}
+                      # If ip6, condense to 18 characters so it reasonably fits in our table.
+                      local first_part=$(echo -n $1 | awk -F: '{ printf "%s:", $1,$2 }') # up to 5 characters
+                      local last_part=$(echo -n $1 | awk -F: '{ printf ":%s:%s", $(NF-1),$NF }') # up to 10 characters
+                      first_ip="${first_part}...${last_part}" # add another 3 for the ellipses... that's 18 characters total.
+                    fi
+
+                    # Get the method. Must be changed to static later, if not already that.
                     method=$(nmcli -g ipv4.method connection show "$name" 2>/dev/null | tr -d '[:space:]')
                     method="${method:-unknown}"
 
                     [ "$active" = "yes" ] && status="ACTIVE" || status="INACTIVE"
 
-                    if [ "$active" = "yes" ] && [ -n "$device" ] && [ "$type" != "loopback" ] && [ "$device" != "lo" ]; then
-                        validity_map["$name"]="v";  interface_map["$name"]="$device"; connection_map["$name"]="$name"; ip4_addresses_map["$name"]="$ip4_addresses"
+                     if [ "$active" = "yes" ] && [ -n "$device" ] && [ "$type" != "loopback" ] && [ "$device" != "lo" ]; then
+                        validity_map["$name"]="v";  interface_map["$name"]="$device"; connection_map["$name"]="$name";
+                        ip4_addresses_map["$name"]="$ip4_addresses"; ip6_addresses_map["$name"]="$ip4_addresses"
+                        #              device uuid 1stip meth status
                         printf -v det "%-12s %-38s %-18s %-12s %-8s" "$device" "$uuid" "$first_ip" "$method" "$status"
                     else
                         validity_map["$name"]="d"
+                        # Color invalid rows red.
+                        #              red device uuid 1stip meth status
                         printf -v det "\Z1%-12s %-38s %-18s %-12s %-8s\Z0" "$device" "$uuid" "$first_ip" "$method" "$status"
                     fi
                     table_rows+=("$name" "$det")
